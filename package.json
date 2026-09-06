@@ -1,0 +1,17 @@
+{
+  "name": "@buffercore/figma",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "figma:build": "node tools/build-figma.mjs",
+    "figma:validate": "node tools/build-figma.mjs --validate-only",
+    "plugin:build": "node tools/build-plugin.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "repo:sync": "node tools/sync-repository.mjs",
+    "repo:bridge": "node tools/repository-bridge.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

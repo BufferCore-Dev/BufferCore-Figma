@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 2,
+  "platform": "figma",
+  "collections": {
+    "primitive": {
+      "name": "Primitive",
+      "publish": false
+    },
+    "semantic": {
+      "name": "Semantic",
+      "publish": true
+    }
+  },
+  "modeAliases": {
+    "colour-scheme": {
+      "name": "Theme",
+      "values": {
+        "light": "Light",
+        "dark": "Dark"
+      }
+    },
+    "viewport": {
+      "name": "Viewport",
+      "values": {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large"
+      }
+    }
+  },
+  "valueTypes": {
+    "color": "COLOR",
+    "dimension": "FLOAT",
+    "number": "FLOAT",
+    "boolean": "BOOLEAN",
+    "duration": "FLOAT",
+    "string": "STRING",
+    "easing": "STRING",
+    "expression": "STRING",
+    "composite": "STRING",
+    "mixed": "STRING"
+  },
+  "units": {
+    "rootFontSizePx": 16,
+    "durationUnit": "ms"
+  },
+  "scopeRules": [
+    {
+      "match": {
+        "valueType": "number",
+        "pathContains": "opacity"
+      },
+      "scopes": [
+        "OPACITY"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "pathContains": "font-family"
+      },
+      "scopes": [
+        "FONT_FAMILY"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "pathContains": "font-size"
+      },
+      "scopes": [
+        "FONT_SIZE"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "pathContains": "font-weight"
+      },
+      "scopes": [
+        "FONT_WEIGHT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "pathContains": "line-height"
+      },
+      "scopes": [
+        "LINE_HEIGHT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "pathContains": "letter-spacing"
+      },
+      "scopes": [
+        "LETTER_SPACING"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "pathPrefix": [
+          "color",
+          "text"
+        ]
+      },
+      "scopes": [
+        "TEXT_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "pathPrefix": [
+          "color",
+          "border"
+        ]
+      },
+      "scopes": [
+        "STROKE_COLOR"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "pathPrefix": [
+          "color",
+          "fill"
+        ]
+      },
+      "scopes": [
+        "ALL_FILLS"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "pathPrefix": [
+          "color",
+          "surface"
+        ]
+      },
+      "scopes": [
+        "ALL_FILLS"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "pathPrefix": [
+          "color",
+          "canvas"
+        ]
+      },
+      "scopes": [
+        "ALL_FILLS"
+      ]
+    }
+  ],
+  "naming": {
+    "separator": " / ",
+    "primitiveColour": {
+      "tint": "T{value}",
+      "shade": "S{value}",
+      "base": "Base"
+    }
+  },
+  "textStyles": {
+    "enabled": true,
+    "roles": {
+      "display": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "heading": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "paragraph": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "label": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "overline": [
+        1,
+        2
+      ]
+    },
+    "properties": [
+      "font-family",
+      "font-size",
+      "font-weight",
+      "line-height",
+      "letter-spacing"
+    ]
+  },
+  "effectStyles": {
+    "enabled": true,
+    "blurPrefix": [
+      "blur"
+    ],
+    "shadowFoundation": "shadows"
+  },
+  "divider": {
+    "enabled": true,
+    "id": "divider.semantic-primitive",
+    "name": "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500"
+  },
+  "foundationOrder": [
+    "colour",
+    "typography",
+    "spacing",
+    "sizing",
+    "radius",
+    "borders",
+    "stroke",
+    "shadows",
+    "motion",
+    "effects",
+    "breakpoints",
+    "containers",
+    "z-index"
+  ],
+  "foundationNames": {
+    "colour": "Colour",
+    "typography": "Typography",
+    "spacing": "Spacing",
+    "sizing": "Sizing",
+    "radius": "Radius",
+    "borders": "Borders",
+    "stroke": "Stroke",
+    "shadows": "Shadows",
+    "motion": "Motion",
+    "effects": "Effects",
+    "breakpoints": "Breakpoints",
+    "containers": "Containers",
+    "z-index": "Z-index"
+  },
+  "collectionOrdering": {
+    "strategy": "leading-spaces",
+    "enabled": true
+  },
+  "viewportSampling": {
+    "enabled": true,
+    "dimension": {
+      "id": "viewport",
+      "name": "Viewport",
+      "values": [
+        {
+          "id": "small",
+          "name": "Small",
+          "widthPx": 480
+        },
+        {
+          "id": "medium",
+          "name": "Medium",
+          "widthPx": 840
+        },
+        {
+          "id": "large",
+          "name": "Large",
+          "widthPx": 1200
+        }
+      ]
+    }
+  },
+  "variableOrdering": {
+    "strategy": "segment-leading-spaces",
+    "maxLeadingSpaces": 40
+  }
+}

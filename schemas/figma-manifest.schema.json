@@ -1,0 +1,355 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://buffercore.local/schemas/figma-manifest.schema.json",
+  "title": "BufferCore Figma manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "platform",
+    "system",
+    "generatedAt",
+    "source",
+    "repository",
+    "flavour",
+    "modeDimensions",
+    "collections",
+    "variables",
+    "retiredVariables",
+    "styles",
+    "diagnostics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2
+    },
+    "platform": {
+      "type": "string",
+      "const": "figma"
+    },
+    "system": {
+      "type": "string",
+      "const": "BufferCore"
+    },
+    "generatedAt": {
+      "type": "string"
+    },
+    "source": {
+      "type": "object"
+    },
+    "modeDimensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "values"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "collections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "publish",
+          "kind",
+          "layer",
+          "foundation",
+          "modeDimensions",
+          "figmaName",
+          "sortRank"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string"
+          },
+          "publish": {
+            "type": "boolean"
+          },
+          "modeDimensions": {
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "token",
+              "divider"
+            ]
+          },
+          "layer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "primitive",
+              "semantic",
+              null
+            ]
+          },
+          "foundation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "figmaName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sortRank": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "cssVariable",
+          "foundation",
+          "layer",
+          "path",
+          "groupPath",
+          "valueType",
+          "units",
+          "collectionId",
+          "name",
+          "type",
+          "scopes",
+          "publish",
+          "values"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cssVariable": {
+            "type": "string",
+            "pattern": "^--bc-"
+          },
+          "foundation": {
+            "type": "string"
+          },
+          "layer": {
+            "enum": [
+              "primitive",
+              "semantic"
+            ]
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "groupPath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "valueType": {
+            "type": "string"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "collectionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "enum": [
+              "COLOR",
+              "FLOAT",
+              "BOOLEAN",
+              "STRING"
+            ]
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "publish": {
+            "type": "boolean"
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "styles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "TEXT",
+              "EFFECT"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "required": [
+        "errors",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "array"
+        },
+        "warnings": {
+          "type": "array"
+        }
+      }
+    },
+    "retiredVariables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cssVariable",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cssVariable": {
+            "type": "string",
+            "pattern": "^--bc-"
+          },
+          "reason": {
+            "enum": [
+              "runtime-hook",
+              "composite",
+              "non-alias-semantic",
+              "non-primitive-alias-chain",
+              "conditional-only"
+            ]
+          }
+        }
+      }
+    },
+    "flavour": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "id",
+        "displayName",
+        "source",
+        "overrideCount"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "overrideCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "repository": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "core": {
+          "type": "object"
+        },
+        "flavours": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "flavour": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
