@@ -97,8 +97,12 @@ async function sync(flavour) {
   try {
     const args = ['run', 'repo:sync'];
     if (flavour) args.push('--', '--flavour', flavour);
-    const command = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const { stdout, stderr } = await execFileAsync(command, args, {
+    const invocation = process.env.npm_execpath
+      ? { command: process.execPath, args: [process.env.npm_execpath, ...args] }
+      : process.platform === 'win32'
+        ? { command: process.env.ComSpec || process.env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...args] }
+        : { command: 'npm', args };
+    const { stdout, stderr } = await execFileAsync(invocation.command, invocation.args, {
       cwd: root,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024

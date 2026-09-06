@@ -26,8 +26,19 @@ const coreBranch = arg('--core-branch');
 const flavoursBranch = arg('--flavours-branch');
 const flavour = arg('--flavour');
 
+function npmInvocation(args, env = process.env) {
+  if (env.npm_execpath) {
+    return { command: process.execPath, args: [env.npm_execpath, ...args] };
+  }
+  if (process.platform === 'win32') {
+    return { command: env.ComSpec || env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...args] };
+  }
+  return { command: 'npm', args };
+}
+
 function runNpm(cwd, args, env = process.env) {
-  execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, {
+  const invocation = npmInvocation(args, env);
+  execFileSync(invocation.command, invocation.args, {
     cwd,
     env,
     stdio: 'inherit'
