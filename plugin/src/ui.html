@@ -223,7 +223,7 @@
   let manifest = null;
   let activeFilter = 'all';
   const $ = (id) => document.getElementById(id);
-  const BRIDGE_URL = 'http://127.0.0.1:3847';
+  const BRIDGE_URL = 'http://localhost:3847';
   let bridgeAvailable = false;
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }

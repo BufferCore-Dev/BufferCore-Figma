@@ -124,4 +124,4 @@ Useful options:
 
 ## Repository sync in the development plugin
 
-Run `npm run repo:bridge` while using the local development plugin. The plugin can then show the current Core/Flavours branch and commit, select a Flavour, run the existing safe fast-forward repository sync, rebuild Engine/Figma state, load the resulting manifest, inspect the diff, and apply it. Manual manifest import remains available as a fallback. The bridge listens only on `127.0.0.1:3847`; the development plugin manifest permits only that local endpoint.
+Run `npm run repo:bridge` while using the local development plugin. The plugin can then show the current Core/Flavours branch and commit, select a Flavour, run the existing safe fast-forward repository sync, rebuild Engine/Figma state, load the resulting manifest, inspect the diff, and apply it. Manual manifest import remains available as a fallback. The bridge listens only on `localhost:3847`; the development plugin manifest permits only that local endpoint.
