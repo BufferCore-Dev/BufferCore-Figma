@@ -258,6 +258,21 @@ function summariseDiffByKind(diff) {
 
 figma.showUI(__html__, { width: 620, height: 780, themeColors: true });
 
+const REPOSITORY_BRIDGE_URL = 'http://localhost:3847';
+
+async function repositoryBridgeRequest(path, options = {}) {
+  const response = await fetch(REPOSITORY_BRIDGE_URL + path, {
+    ...options,
+    headers: { 'content-type': 'application/json', ...(options.headers || {}) }
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.ok === false) {
+    throw new Error(payload.error || `Bridge request failed (${response.status})`);
+  }
+  return payload;
+}
+
+
 function serialiseError(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -825,6 +840,16 @@ async function apply(manifest) {
 
 figma.ui.onmessage = async (message) => {
   try {
+    if (message?.type === 'bridge-request') {
+      const requestId = message.requestId;
+      try {
+        const payload = await repositoryBridgeRequest(message.path, message.options || {});
+        figma.ui.postMessage({ type: 'bridge-response', requestId, ok: true, payload });
+      } catch (error) {
+        figma.ui.postMessage({ type: 'bridge-response', requestId, ok: false, error: serialiseError(error) });
+      }
+      return;
+    }
     if (message?.type === 'analyse') {
       figma.ui.postMessage({ type: 'analysis', payload: await analyse(message.manifest) });
       return;

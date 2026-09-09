@@ -244,14 +244,21 @@
     $('summary').hidden = true;
     $('changesCard').hidden = true;
   }
-  async function bridgeRequest(path, options = {}) {
-    const response = await fetch(BRIDGE_URL + path, {
-      ...options,
-      headers: { 'content-type': 'application/json', ...(options.headers || {}) }
+  let bridgeRequestSequence = 0;
+  const bridgeRequests = new Map();
+
+  function bridgeRequest(path, options = {}) {
+    return new Promise((resolve, reject) => {
+      const requestId = `bridge-${Date.now()}-${++bridgeRequestSequence}`;
+      const timeout = setTimeout(() => {
+        bridgeRequests.delete(requestId);
+        reject(new Error(`Repository bridge did not respond at ${BRIDGE_URL}.`));
+      }, 5000);
+      bridgeRequests.set(requestId, { resolve, reject, timeout });
+      parent.postMessage({
+        pluginMessage: { type: 'bridge-request', requestId, path, options }
+      }, '*');
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.ok === false) throw new Error(payload.error || `Bridge request failed (${response.status})`);
-    return payload;
   }
   function renderRepositoryStatus(payload) {
     bridgeAvailable = true;
@@ -285,7 +292,7 @@
       $('coreBranch').textContent = '—';
       $('coreCommit').textContent = '—';
       $('flavoursBranch').textContent = '—';
-      $('bridgeNote').innerHTML = 'Start <strong>npm run repo:bridge</strong> in BufferCore-Figma to enable repository pull. Manual import remains available below.';
+      $('bridgeNote').innerHTML = `Could not reach <strong>${BRIDGE_URL}</strong>: ${escapeHtml(error.message || String(error))}`;
     }
   }
 
@@ -489,6 +496,15 @@
   onmessage = (event) => {
     const message = event.data.pluginMessage;
     if (!message) return;
+    if (message.type === 'bridge-response') {
+      const pending = bridgeRequests.get(message.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      bridgeRequests.delete(message.requestId);
+      if (message.ok) pending.resolve(message.payload);
+      else pending.reject(new Error(message.error || 'Repository bridge request failed.'));
+      return;
+    }
     if (message.type === 'analysis') {
       renderDiff(message.payload);
       $('analyse').disabled = false;

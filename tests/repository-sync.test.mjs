@@ -95,3 +95,21 @@ test('development bridge uses Figma-supported localhost URL and is not pinned to
   assert.doesNotMatch(bridge, /server\.listen\(port, '127\.0\.0\.1'/);
   assert.match(bridge, /http:\/\/localhost:\$\{port\}/);
 });
+
+test('repository networking runs in the Figma plugin main context rather than the UI iframe', () => {
+  const code = fs.readFileSync(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(code, /const REPOSITORY_BRIDGE_URL = 'http:\/\/localhost:3847'/);
+  assert.match(code, /message\?\.type === 'bridge-request'/);
+  assert.match(code, /await repositoryBridgeRequest\(message\.path, message\.options \|\| \{\}\)/);
+  assert.match(code, /type: 'bridge-response'/);
+  assert.doesNotMatch(html, /await fetch\(BRIDGE_URL/);
+  assert.match(html, /pluginMessage: \{ type: 'bridge-request'/);
+  assert.match(html, /message\.type === 'bridge-response'/);
+});
+
+test('repository bridge failures are visible in the plugin UI instead of silently collapsing to offline', () => {
+  const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /Could not reach <strong>\$\{BRIDGE_URL\}<\/strong>/);
+  assert.match(html, /Repository bridge did not respond at \$\{BRIDGE_URL\}/);
+});
