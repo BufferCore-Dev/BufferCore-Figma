@@ -223,7 +223,7 @@
   let manifest = null;
   let activeFilter = 'all';
   const $ = (id) => document.getElementById(id);
-  const BRIDGE_URL = 'http://127.0.0.1:3847';
+  const BRIDGE_URL = 'http://localhost:3847';
   let bridgeAvailable = false;
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }
@@ -285,7 +285,7 @@
       $('coreBranch').textContent = '—';
       $('coreCommit').textContent = '—';
       $('flavoursBranch').textContent = '—';
-      $('bridgeNote').innerHTML = 'Start <strong>npm run repo:bridge</strong> in BufferCore-Figma to enable repository pull. The development plugin connects to <strong>127.0.0.1:3847</strong>. Manual import remains available below.';
+      $('bridgeNote').innerHTML = 'Start <strong>npm run repo:bridge</strong> in BufferCore-Figma to enable repository pull. Manual import remains available below.';
     }
   }
 

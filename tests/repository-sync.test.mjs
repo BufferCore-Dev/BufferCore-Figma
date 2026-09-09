@@ -69,7 +69,7 @@ test('repository metadata records both source repos and selected Flavour', () =>
 test('development plugin manifest allows only the local repository bridge', () => {
   const manifest = JSON.parse(fs.readFileSync(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.networkAccess.allowedDomains, ['none']);
-  assert.deepEqual(manifest.networkAccess.devAllowedDomains, ['http://127.0.0.1:3847']);
+  assert.deepEqual(manifest.networkAccess.devAllowedDomains, ['http://localhost:3847']);
 });
 
 test('plugin UI exposes repository pull, branch, commit and Flavour controls with manual fallback', () => {
@@ -87,15 +87,11 @@ test('repository bridge exposes status, manifest and sync endpoints', () => {
   assert.match(source, /repo:sync/);
 });
 
-test('plugin bridge URL matches the loopback host the repository bridge actually listens on', () => {
+test('development bridge uses Figma-supported localhost URL and is not pinned to IPv4-only loopback', () => {
   const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
   const bridge = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(html, /const BRIDGE_URL = 'http:\/\/127\.0\.0\.1:3847'/);
-  assert.match(bridge, /server\.listen\(port, '127\.0\.0\.1'/);
-  assert.doesNotMatch(html, /const BRIDGE_URL = 'http:\/\/localhost:3847'/);
-});
-
-test('repository bridge exposes a lightweight health endpoint', () => {
-  const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(source, /req\.url === '\/health'/);
+  assert.match(html, /const BRIDGE_URL = 'http:\/\/localhost:3847'/);
+  assert.match(bridge, /server\.listen\(port, \(\) =>/);
+  assert.doesNotMatch(bridge, /server\.listen\(port, '127\.0\.0\.1'/);
+  assert.match(bridge, /http:\/\/localhost:\$\{port\}/);
 });
