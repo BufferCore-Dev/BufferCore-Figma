@@ -224,6 +224,15 @@
   let activeFilter = 'all';
   const $ = (id) => document.getElementById(id);
   const BRIDGE_URL = 'http://localhost:3847';
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
   let bridgeAvailable = false;
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }
@@ -253,7 +262,7 @@
       const timeout = setTimeout(() => {
         bridgeRequests.delete(requestId);
         reject(new Error(`Repository bridge did not respond at ${BRIDGE_URL}.`));
-      }, 5000);
+      }, path === '/sync' ? 300000 : 10000);
       bridgeRequests.set(requestId, { resolve, reject, timeout });
       parent.postMessage({
         pluginMessage: { type: 'bridge-request', requestId, path, options }

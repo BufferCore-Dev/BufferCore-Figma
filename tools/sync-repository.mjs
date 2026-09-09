@@ -59,7 +59,10 @@ try {
   console.log(`Core                    : ${core.branch} @ ${core.commit.slice(0, 10)}${core.changed ? ' (updated)' : ''}`);
 
   let flavours = null;
-  if (fs.existsSync(flavoursPath)) {
+  if (flavour) {
+    if (!fs.existsSync(flavoursPath)) {
+      throw new Error(`Flavour repository not found: ${flavoursPath}`);
+    }
     flavours = syncRepository(flavoursPath, {
       remote: flavoursRemote,
       branch: flavoursBranch,
@@ -67,8 +70,8 @@ try {
       allowDirty
     });
     console.log(`Flavours                : ${flavours.branch} @ ${flavours.commit.slice(0, 10)}${flavours.changed ? ' (updated)' : ''}`);
-  } else if (flavour) {
-    throw new Error(`Flavour repository not found: ${flavoursPath}`);
+  } else {
+    console.log('Flavours                : not required for Core baseline');
   }
 
   const metadata = buildRepositoryMetadata({ core, flavours, flavour });

@@ -17,7 +17,7 @@ function fakeRunner({ branch = 'main', commit = 'abc123', status = '', remoteUrl
     if (joined.startsWith('remote get-url')) return remoteUrl;
     if (args[0] === 'switch' && args[1] && args[1] !== '--track') { currentBranch = args[1]; return ''; }
     if (args[0] === 'switch' && args[1] === '--track') { currentBranch = args[3]; return ''; }
-    if (args[0] === 'pull') { if (afterCommit) currentCommit = afterCommit; return ''; }
+    if (args[0] === 'merge') { if (afterCommit) currentCommit = afterCommit; return ''; }
     if (args[0] === 'fetch') return '';
     throw new Error(`Unexpected command: ${command} ${joined}`);
   };
@@ -38,13 +38,18 @@ test('sync refuses to pull a dirty repository by default', () => {
   assert.throws(() => syncRepository('.', { run }), /uncommitted changes/);
 });
 
-test('sync uses fetch plus fast-forward-only pull', () => {
+test('sync performs one authenticated fetch then a local fast-forward-only merge', () => {
   const { run, calls } = fakeRunner({ afterCommit: 'def456' });
   const result = syncRepository('.', { run });
   assert.equal(result.changed, true);
   assert.equal(result.commit, 'def456');
-  assert.ok(calls.some((call) => call.join(' ') === 'git fetch --prune origin'));
-  assert.ok(calls.some((call) => call.join(' ') === 'git pull --ff-only origin main'));
+
+  const fetches = calls.filter((call) => call[0] === 'git' && call[1] === 'fetch');
+  assert.equal(fetches.length, 1);
+  assert.deepEqual(fetches[0], ['git', 'fetch', '--prune', 'origin']);
+
+  assert.ok(calls.some((call) => call.join(' ') === 'git merge --ff-only origin/main'));
+  assert.equal(calls.some((call) => call[1] === 'pull'), false);
 });
 
 test('sync can select a configured branch before pulling', () => {
@@ -68,9 +73,8 @@ test('repository metadata records both source repos and selected Flavour', () =>
 
 test('development plugin manifest allows only the local repository bridge', () => {
   const manifest = JSON.parse(fs.readFileSync(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.networkAccess.allowedDomains, ['http://localhost:3847']);
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ['none']);
   assert.deepEqual(manifest.networkAccess.devAllowedDomains, ['http://localhost:3847']);
-  assert.match(manifest.networkAccess.reasoning, /local repository bridge/i);
 });
 
 test('plugin UI exposes repository pull, branch, commit and Flavour controls with manual fallback', () => {
@@ -113,4 +117,13 @@ test('repository bridge failures are visible in the plugin UI instead of silentl
   const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
   assert.match(html, /Could not reach <strong>\$\{BRIDGE_URL\}<\/strong>/);
   assert.match(html, /Repository bridge did not respond at \$\{BRIDGE_URL\}/);
+});
+
+test('Core baseline repository sync does not contact the Flavours repository', () => {
+  const source = fs.readFileSync(new URL('../tools/sync-repository.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(flavour\) \{/);
+  assert.match(source, /Flavours\s+: not required for Core baseline/);
+  const flavourSyncIndex = source.indexOf('flavours = syncRepository');
+  const flavourGuardIndex = source.indexOf('if (flavour) {');
+  assert.ok(flavourGuardIndex >= 0 && flavourSyncIndex > flavourGuardIndex);
 });

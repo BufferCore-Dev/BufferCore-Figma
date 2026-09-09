@@ -66,7 +66,7 @@ export function syncRepository(repoPath, {
         git(run, repoPath, ['switch', '--track', '-c', wantedBranch, `${remote}/${wantedBranch}`]);
       }
     }
-    git(run, repoPath, ['pull', '--ff-only', remote, wantedBranch]);
+    git(run, repoPath, ['merge', '--ff-only', `${remote}/${wantedBranch}`]);
   } else if (before.branch !== wantedBranch) {
     throw new Error(`Repository is on ${before.branch || 'detached HEAD'}, expected ${wantedBranch}. Pull is disabled.`);
   }
