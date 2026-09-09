@@ -117,6 +117,7 @@ async function sync(flavour) {
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
+  if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ok: true, host: '127.0.0.1', port });
   if (req.method === 'GET' && req.url === '/status') return json(res, 200, currentStatus());
   if (req.method === 'GET' && req.url === '/manifest') {
     const manifest = readJson(manifestPath);
