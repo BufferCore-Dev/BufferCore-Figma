@@ -210,7 +210,7 @@ function genericFoundationPresentation(token) {
     if (token.layer === "semantic") return { segments: clean.map(displaySegment), ranks: [strengthOrder[clean[0]] || 50, stateOrder[clean[1]] || 50] };
     if (clean[0] === "geometry" || clean[0] === "opacity") {
       const [kind, strength, state, layer] = clean;
-      return { segments: [displaySegment(strength), displaySegment(state), displaySegment(kind), displaySegment(layer)], ranks: [strengthOrder[strength] || 50, stateOrder[state] || 50, kind === "geometry" ? 1 : 2, scaleRank(layer)] };
+      return { segments: ["Shadow", displaySegment(strength), displaySegment(state), displaySegment(kind), displaySegment(layer)], ranks: [1, strengthOrder[strength] || 50, stateOrder[state] || 50, kind === "geometry" ? 1 : 2, scaleRank(layer)] };
     }
   }
   if (foundation === "motion") {

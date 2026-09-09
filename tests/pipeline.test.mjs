@@ -369,7 +369,7 @@ test("Figma presentation IA makes shadow primitives strength-first", () => {
     token({ id: "shadow.geometry.soft.resting.1", cssVariable: "--bc-shadow-geometry-soft-resting-1", layer: "primitive", foundation: "shadows", path: ["shadow", "geometry", "soft", "resting", "1"], valueType: "string", value: "0 1px 2px", unit: null })
   ]));
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
-  assert.equal(manifest.variables[0].name, "Soft / Resting / Geometry / 1");
+  assert.equal(manifest.variables[0].name, "Shadow / Soft / Resting / Geometry / 1");
 });
 
 
