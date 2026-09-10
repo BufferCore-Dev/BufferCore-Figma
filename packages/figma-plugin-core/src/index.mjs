@@ -6,8 +6,43 @@ export const BUFFERCORE_KEYS = Object.freeze({
   appliedSignature: 'buffercore.appliedSignature',
   appliedLiveSignature: 'buffercore.appliedLiveSignature',
   bindingRegistry: 'buffercore.bindingRegistry',
-  bindingRegistryVersion: 'buffercore.bindingRegistryVersion'
+  bindingRegistryVersion: 'buffercore.bindingRegistryVersion',
+  libraryTarget: 'buffercore.libraryTarget',
+  libraryKind: 'buffercore.libraryKind',
+  bindingTranslationRegistry: 'buffercore.bindingTranslationRegistry'
 });
+
+export function libraryTargetForManifest(manifest) {
+  const flavourId = manifest?.flavour?.id || manifest?.library?.flavourId || null;
+  return flavourId ? `flavour:${flavourId}` : 'baseline';
+}
+
+export function libraryKindForManifest(manifest) {
+  return libraryTargetForManifest(manifest) === 'baseline' ? 'baseline' : 'flavour';
+}
+
+export function buildBindingTranslationRegistry(bindingRegistry = {}) {
+  return {
+    collections: { ...(bindingRegistry.collections || {}) },
+    variables: { ...(bindingRegistry.variables || {}) },
+    styles: { ...(bindingRegistry.styles || {}) }
+  };
+}
+
+export function translateCanonicalBinding(binding, registry = {}) {
+  if (!binding) return null;
+  const canonicalId = typeof binding === 'string'
+    ? binding
+    : binding.tokenId || binding.styleId || binding.id;
+  if (!canonicalId) return null;
+  if (registry.variables?.[canonicalId]) {
+    return { kind: 'variable', canonicalId, figmaId: registry.variables[canonicalId] };
+  }
+  if (registry.styles?.[canonicalId]) {
+    return { kind: 'style', canonicalId, figmaId: registry.styles[canonicalId] };
+  }
+  return null;
+}
 
 export function cartesianModeCombinations(modeDimensions = []) {
   if (!Array.isArray(modeDimensions) || modeDimensions.length === 0) {

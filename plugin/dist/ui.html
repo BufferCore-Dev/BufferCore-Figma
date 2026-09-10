@@ -100,6 +100,15 @@
   select { font:inherit; min-height:34px; border:1px solid var(--figma-color-border); border-radius:7px; padding:0 9px; background:var(--figma-color-bg); color:var(--figma-color-text); }
   .bridge-note { margin-top:8px; color:var(--figma-color-text-secondary); font-size:11px; line-height:1.4; }
   .bridge-note strong { color:var(--figma-color-text); }
+  .library-stack { display:grid; gap:10px; }
+  .library-block { border:1px solid var(--figma-color-border); border-radius:9px; background:var(--figma-color-bg); padding:11px; }
+  .library-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:9px; }
+  .library-name { font-weight:750; }
+  .library-kicker { display:block; color:var(--figma-color-text-secondary); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px; }
+  .library-meta { color:var(--figma-color-text-secondary); font-size:11px; line-height:1.35; }
+  .library-stats { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .mini-chip { border:1px solid var(--figma-color-border); border-radius:999px; padding:4px 7px; color:var(--figma-color-text-secondary); font-size:10px; }
+  .target-banner { margin-top:10px; padding:8px 10px; border-radius:7px; background:var(--figma-color-bg-secondary); color:var(--figma-color-text-secondary); font-size:11px; }
   details.manual { border-top:1px solid var(--figma-color-border); }
   details.manual > summary { cursor:pointer; padding:10px 12px; color:var(--figma-color-text-secondary); font-weight:650; }
   .syncing .status-dot { animation:pulse 1s infinite alternate; }
@@ -111,8 +120,8 @@
   <header class="topbar">
     <div class="brand">
       <div class="eyebrow">BufferCore → Figma</div>
-      <h1>Foundation sync</h1>
-      <p class="lead">Review exactly what BufferCore will import or update before applying anything to this Figma file.</p>
+      <h1>Library sync</h1>
+      <p class="lead">Maintain the Core baseline and resolved client Flavour libraries without mixing the two.</p>
     </div>
     <div id="status" class="status-pill"><span class="status-dot"></span><span id="statusText">No manifest</span></div>
   </header>
@@ -129,11 +138,42 @@
         <div class="repo-stat"><span>Flavours branch</span><strong id="flavoursBranch">—</strong></div>
         <div class="repo-stat"><span>Generated</span><strong id="generatedAt">—</strong></div>
       </div>
-      <div class="repo-controls">
-        <select id="flavourSelect"><option value="">Core baseline</option></select>
-        <button id="repoRefresh" class="action">Refresh</button>
-        <button id="repoSync" class="action primary">Pull + build</button>
+
+      <div class="library-stack">
+        <div class="library-block">
+          <div class="library-head">
+            <div>
+              <span class="library-kicker">Baseline library</span>
+              <div class="library-name">BufferCore Core</div>
+              <div class="library-meta">Pure Core. Keep this as the master design-system library.</div>
+            </div>
+            <button id="baselineSync" class="action primary">Pull + build Core</button>
+          </div>
+          <div class="library-stats"><span id="baselineState" class="mini-chip">Ready</span></div>
+        </div>
+
+        <div class="library-block">
+          <div class="library-head">
+            <div>
+              <span class="library-kicker">Flavour library</span>
+              <div class="library-name">Resolved client library</div>
+              <div class="library-meta">Current Core resolved through the selected Flavour. Use this library in client design files.</div>
+            </div>
+          </div>
+          <div class="repo-controls" style="margin-top:0">
+            <select id="flavourSelect"><option value="">Choose a Flavour…</option></select>
+            <button id="flavourSync" class="action primary" disabled>Pull + resolve</button>
+          </div>
+          <div class="library-stats">
+            <span id="flavourOverrides" class="mini-chip">0 overrides</span>
+            <span id="flavourInherited" class="mini-chip">— inherited primitives</span>
+            <span id="flavourMappings" class="mini-chip">0 semantic mappings</span>
+          </div>
+        </div>
       </div>
+
+      <div class="repo-controls"><button id="repoRefresh" class="action">Refresh repository state</button></div>
+      <div id="libraryTarget" class="target-banner">This Figma file has not been assigned as a Baseline or Flavour library yet.</div>
       <div id="bridgeNote" class="bridge-note">Repository sync uses the local BufferCore bridge. Start it with <strong>npm run repo:bridge</strong> in BufferCore-Figma.</div>
     </div>
     <details class="manual">
@@ -233,7 +273,9 @@
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&#39;');
   }
+
   let bridgeAvailable = false;
+  let activeLibraryTarget = null;
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }
   function formatDate(value) {
@@ -245,8 +287,14 @@
     const variables = Array.isArray(manifest?.variables) ? manifest.variables.length : 0;
     const styles = Array.isArray(manifest?.styles) ? manifest.styles.length : 0;
     const flavour = manifest?.flavour?.displayName || manifest?.repository?.flavour || 'Core baseline';
+    activeLibraryTarget = manifest?.library?.target || (manifest?.flavour?.id ? `flavour:${manifest.flavour.id}` : 'baseline');
     $('name').textContent = label;
     $('manifestMeta').textContent = `${flavour} · ${variables} variables · ${styles} styles · schema ${manifest?.schemaVersion ?? '?'}`;
+    if (manifest?.library) {
+      $('flavourOverrides').textContent = `${manifest.library.flavourOverrideCount || 0} overrides`;
+      $('flavourInherited').textContent = `${manifest.library.inheritedPrimitiveCount ?? '—'} inherited primitives`;
+      $('flavourMappings').textContent = `${manifest.library.flavourSemanticMappingCount || 0} semantic mappings`;
+    }
     $('statusText').textContent = 'Ready to inspect';
     $('analyse').disabled = false;
     $('apply').disabled = true;
@@ -276,15 +324,30 @@
     $('coreCommit').textContent = shortCommit(payload.core?.commit);
     $('flavoursBranch').textContent = payload.flavoursRepository?.branch || '—';
     $('generatedAt').textContent = formatDate(payload.manifest?.generatedAt);
+
     const select = $('flavourSelect');
     const selected = select.value;
-    select.innerHTML = '<option value="">Core baseline</option>' + (payload.flavours || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName)}</option>`).join('');
+    select.innerHTML = '<option value="">Choose a Flavour…</option>' + (payload.flavours || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.displayName)}</option>`).join('');
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
     else if (payload.manifest?.flavour?.id && [...select.options].some((option) => option.value === payload.manifest.flavour.id)) select.value = payload.manifest.flavour.id;
-    $('repoSync').disabled = Boolean(payload.syncing || payload.core?.dirty || payload.flavoursRepository?.dirty);
+
+    const coreBlocked = Boolean(payload.syncing || payload.core?.dirty);
+    $('baselineSync').disabled = coreBlocked;
+    $('flavourSync').disabled = coreBlocked || Boolean(payload.flavoursRepository?.dirty) || !select.value;
+    $('baselineState').textContent = payload.core?.dirty ? 'Core has local changes' : `${payload.core?.branch || '—'} @ ${shortCommit(payload.core?.commit)}`;
+
+    const library = payload.manifest?.library;
+    if (library) {
+      $('flavourOverrides').textContent = `${library.flavourOverrideCount || 0} overrides`;
+      $('flavourInherited').textContent = `${library.inheritedPrimitiveCount ?? '—'} inherited primitives`;
+      $('flavourMappings').textContent = `${library.flavourSemanticMappingCount || 0} semantic mappings`;
+    } else if (payload.manifest?.flavour) {
+      $('flavourOverrides').textContent = `${payload.manifest.flavour.overrideCount || 0} overrides`;
+    }
+
     $('bridgeNote').textContent = payload.core?.dirty || payload.flavoursRepository?.dirty
       ? 'Repository has uncommitted changes. Commit or stash them before pulling.'
-      : 'Pulls with fast-forward only, rebuilds Engine + Figma state, then loads the result here.';
+      : 'Baseline builds only Core. Flavour builds current Core + the selected Flavour into one resolved client library.';
   }
   async function refreshRepository({ loadLatest = false } = {}) {
     try {
@@ -297,7 +360,8 @@
     } catch (error) {
       bridgeAvailable = false;
       $('repoState').textContent = 'Bridge offline';
-      $('repoSync').disabled = true;
+      $('baselineSync').disabled = true;
+      $('flavourSync').disabled = true;
       $('coreBranch').textContent = '—';
       $('coreCommit').textContent = '—';
       $('flavoursBranch').textContent = '—';
@@ -432,6 +496,14 @@
     $('emptyChanges').hidden = list.children.length !== 0;
     applyFilter();
 
+    const target = payload.libraryTarget;
+    if (target?.blocked) {
+      $('libraryTarget').textContent = `Wrong library file: this file is ${target.current}, but the loaded manifest is ${target.requested}. Open the matching Figma library instead.`;
+    } else if (target?.current) {
+      $('libraryTarget').textContent = `Library target: ${target.current}. Core and Flavour libraries stay separate so overrides cannot be pasted over Baseline.`;
+    } else if (target?.requested) {
+      $('libraryTarget').textContent = `Ready to assign this file as ${target.requested} on first apply.`;
+    }
     renderWarnings(payload.manifestWarnings || payload.result?.warnings || []);
   }
 
@@ -454,6 +526,10 @@
     }
   });
 
+  $('flavourSelect').addEventListener('change', () => {
+    $('flavourSync').disabled = !bridgeAvailable || !$('flavourSelect').value;
+  });
+
   $('repoRefresh').addEventListener('click', async () => {
     setError();
     $('repoRefresh').disabled = true;
@@ -461,20 +537,21 @@
     $('repoRefresh').disabled = false;
   });
 
-  $('repoSync').addEventListener('click', async () => {
+  async function syncTarget(flavour = null) {
     setError();
     $('status').classList.add('syncing');
-    $('statusText').textContent = 'Pulling repository…';
-    $('repoSync').disabled = true;
+    $('statusText').textContent = flavour ? 'Resolving Flavour…' : 'Building Core baseline…';
+    $('baselineSync').disabled = true;
+    $('flavourSync').disabled = true;
     $('repoRefresh').disabled = true;
     try {
       const payload = await bridgeRequest('/sync', {
         method: 'POST',
-        body: JSON.stringify({ flavour: $('flavourSelect').value || null })
+        body: JSON.stringify({ flavour })
       });
       renderRepositoryStatus(payload.status);
-      loadManifest(payload.manifest, 'Repository manifest');
-      $('statusText').textContent = 'Pulled · ready to inspect';
+      loadManifest(payload.manifest, flavour ? 'Resolved Flavour manifest' : 'Core baseline manifest');
+      $('statusText').textContent = 'Built · ready to inspect';
     } catch (error) {
       $('statusText').textContent = 'Repository sync failed';
       setError(error.message);
@@ -482,8 +559,17 @@
     } finally {
       $('status').classList.remove('syncing');
       $('repoRefresh').disabled = false;
-      if (bridgeAvailable) $('repoSync').disabled = false;
+      if (bridgeAvailable) {
+        $('baselineSync').disabled = false;
+        $('flavourSync').disabled = !$('flavourSelect').value;
+      }
     }
+  }
+
+  $('baselineSync').addEventListener('click', () => syncTarget(null));
+  $('flavourSync').addEventListener('click', () => {
+    const flavour = $('flavourSelect').value;
+    if (flavour) syncTarget(flavour);
   });
 
   $('analyse').addEventListener('click', () => {

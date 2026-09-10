@@ -893,6 +893,10 @@ export function buildFigmaManifest({
       scopes: scopesFor(token, config),
       publish: collection.publish,
       codeSyntax: { WEB: `var(${token.cssVariable})` },
+      provenance: {
+        flavourOverride: token.layer === "primitive" && (token.variants || []).some((variant) => variant.source?.kind === "flavour"),
+        flavourSemanticMapping: token.layer === "semantic" && (token.variants || []).some((variant) => variant.source?.kind === "flavour-semantic-mapping" || variant.source?.kind === "flavour-semantic-typography-mapping")
+      },
       values: tokenValues(token, config, diagnostics, tokenById)
     });
   }
@@ -910,6 +914,10 @@ export function buildFigmaManifest({
     ...buildEffectStyles(canonical.tokens || [], config, diagnostics)
   ].sort((a, b) => `${a.type}/${a.name}`.localeCompare(`${b.type}/${b.name}`));
 
+  const primitiveVariableCount = variables.filter((variable) => variable.layer === "primitive").length;
+  const flavourOverrideCount = variables.filter((variable) => variable.provenance?.flavourOverride).length;
+  const flavourSemanticMappingCount = variables.filter((variable) => variable.provenance?.flavourSemanticMapping).length;
+
   const manifest = {
     schemaVersion: 2,
     platform: "figma",
@@ -921,6 +929,15 @@ export function buildFigmaManifest({
     },
     repository: canonical.repository || null,
     flavour: canonical.flavour || null,
+    library: {
+      target: canonical.flavour ? `flavour:${canonical.flavour.id}` : "baseline",
+      kind: canonical.flavour ? "flavour" : "baseline",
+      flavourId: canonical.flavour?.id || null,
+      primitiveVariableCount,
+      flavourOverrideCount,
+      inheritedPrimitiveCount: Math.max(0, primitiveVariableCount - flavourOverrideCount),
+      flavourSemanticMappingCount
+    },
     modeDimensions,
     collections,
     variables,

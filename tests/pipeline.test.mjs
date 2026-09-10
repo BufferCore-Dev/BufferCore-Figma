@@ -417,3 +417,60 @@ test("carries resolved Flavour provenance into the Figma manifest", () => {
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath: writeCanonical(canonical), configPath });
   assert.deepEqual(manifest.flavour, canonical.flavour);
 });
+
+test("Figma manifest identifies Baseline as a pure Core library target", () => {
+  const primitive = token({ id: "colour.primary", cssVariable: "--bc-color-primary", foundation: "colour", path: ["colour", "primary"], valueType: "color", value: "#123456", unit: null });
+  const canonicalPath = writeCanonical(canonicalFixture([primitive]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  assert.equal(manifest.library.target, "baseline");
+  assert.equal(manifest.library.kind, "baseline");
+  assert.equal(manifest.library.flavourOverrideCount, 0);
+  assert.equal(manifest.library.inheritedPrimitiveCount, 1);
+});
+
+test("resolved Flavour manifest remains complete while marking only primitive overrides as Flavour-owned", () => {
+  const overridden = token({ id: "colour.primary", cssVariable: "--bc-color-primary", foundation: "colour", path: ["colour", "primary"], valueType: "color", value: "#00aa55", unit: null });
+  overridden.variants[0].source.kind = "flavour";
+
+  const inherited = token({ id: "space.4", cssVariable: "--bc-space-4", foundation: "spacing", path: ["space", "4"], valueType: "dimension", value: "16px", unit: "px" });
+
+  const semantic = token({ id: "colour.fill.primary", cssVariable: "--bc-color-fill-primary", layer: "semantic", foundation: "colour", path: ["colour", "fill", "primary"], valueType: "color", value: "var(--bc-color-primary)", unit: null });
+  semantic.variants[0].references = ["colour.primary"];
+  semantic.variants[0].resolved = "#00aa55";
+
+  const fixture = canonicalFixture([overridden, inherited, semantic]);
+  fixture.flavour = { id: "wallwood", displayName: "Wallwood", overrideCount: 1, semanticMappingCount: 0 };
+  const canonicalPath = writeCanonical(fixture);
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  assert.equal(manifest.library.target, "flavour:wallwood");
+  assert.equal(manifest.library.kind, "flavour");
+  assert.equal(manifest.variables.length, 3);
+  assert.equal(manifest.library.flavourOverrideCount, 1);
+  assert.equal(manifest.library.inheritedPrimitiveCount, 1);
+  assert.equal(manifest.variables.find((item) => item.id === "colour.primary").provenance.flavourOverride, true);
+  assert.equal(manifest.variables.find((item) => item.id === "space.4").provenance.flavourOverride, false);
+  assert.equal(manifest.variables.find((item) => item.id === "colour.fill.primary").values[0].value.kind, "alias");
+});
+
+test("Core updates flow into inherited Flavour values while Flavour-owned primitive values remain unchanged", () => {
+  const flavourPrimitive = token({ id: "colour.primary", cssVariable: "--bc-color-primary", foundation: "colour", path: ["colour", "primary"], valueType: "color", value: "#00aa55", unit: null });
+  flavourPrimitive.variants[0].source.kind = "flavour";
+  const inheritedBefore = token({ id: "space.4", cssVariable: "--bc-space-4", foundation: "spacing", path: ["space", "4"], valueType: "dimension", value: "16px", unit: "px" });
+  const inheritedAfter = structuredClone(inheritedBefore);
+  inheritedAfter.variants[0].rawValue = "18px";
+  inheritedAfter.variants[0].resolved = "18px";
+
+  const base = canonicalFixture([flavourPrimitive, inheritedBefore]);
+  base.flavour = { id: "wallwood", displayName: "Wallwood", overrideCount: 1, semanticMappingCount: 0 };
+  const next = canonicalFixture([structuredClone(flavourPrimitive), inheritedAfter]);
+  next.flavour = structuredClone(base.flavour);
+
+  const before = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath: writeCanonical(base), configPath });
+  const after = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath: writeCanonical(next), configPath });
+
+  assert.equal(before.variables.find((item) => item.id === "colour.primary").values[0].value.value, "#00aa55");
+  assert.equal(after.variables.find((item) => item.id === "colour.primary").values[0].value.value, "#00aa55");
+  assert.equal(before.variables.find((item) => item.id === "space.4").values[0].value.value, 16);
+  assert.equal(after.variables.find((item) => item.id === "space.4").values[0].value.value, 18);
+});

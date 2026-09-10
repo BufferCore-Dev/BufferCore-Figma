@@ -86,7 +86,8 @@ function currentStatus() {
       flavour: manifest.flavour || null,
       repository: manifest.repository || manifest.source?.repository || null,
       variables: Array.isArray(manifest.variables) ? manifest.variables.length : 0,
-      styles: Array.isArray(manifest.styles) ? manifest.styles.length : 0
+      styles: Array.isArray(manifest.styles) ? manifest.styles.length : 0,
+      library: manifest.library || null
     } : null
   };
 }

@@ -5,7 +5,11 @@ import {
   desiredValueForMode,
   buildDesiredModel,
   buildDiffSummary,
-  summariseDiffByKind
+  summariseDiffByKind,
+  libraryTargetForManifest,
+  libraryKindForManifest,
+  buildBindingTranslationRegistry,
+  translateCanonicalBinding
 } from '../packages/figma-plugin-core/src/index.mjs';
 
 test('flattens arbitrary mode dimensions deterministically for Figma collections', () => {
@@ -311,4 +315,30 @@ test('plugin UI surfaces drift, conflicts and orphaned managed objects and block
   assert.match(source, /data-filter="orphaned"/);
   assert.match(source, /safetyCount/);
   assert.match(source, /message\.payload\.safety\?\.blocked/);
+});
+
+test('library target identity keeps Baseline and each Flavour as separate Figma libraries', () => {
+  assert.equal(libraryTargetForManifest({ platform: 'figma', flavour: null }), 'baseline');
+  assert.equal(libraryKindForManifest({ platform: 'figma', flavour: null }), 'baseline');
+  assert.equal(libraryTargetForManifest({ platform: 'figma', flavour: { id: 'wallwood' } }), 'flavour:wallwood');
+  assert.equal(libraryKindForManifest({ platform: 'figma', flavour: { id: 'wallwood' } }), 'flavour');
+});
+
+test('canonical binding translation maps Core identities to this library own stable Figma IDs', () => {
+  const registry = buildBindingTranslationRegistry({
+    collections: { 'semantic.colour': 'VariableCollection:1' },
+    variables: { 'colour.fill.primary': 'Variable:10' },
+    styles: { 'type.heading.1': 'TextStyle:2' }
+  });
+  assert.deepEqual(translateCanonicalBinding('colour.fill.primary', registry), {
+    kind: 'variable',
+    canonicalId: 'colour.fill.primary',
+    figmaId: 'Variable:10'
+  });
+  assert.deepEqual(translateCanonicalBinding({ styleId: 'type.heading.1' }, registry), {
+    kind: 'style',
+    canonicalId: 'type.heading.1',
+    figmaId: 'TextStyle:2'
+  });
+  assert.equal(translateCanonicalBinding('missing', registry), null);
 });

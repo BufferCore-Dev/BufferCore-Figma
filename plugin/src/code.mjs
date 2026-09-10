@@ -6,7 +6,10 @@ import {
   stableStringify,
   desiredCollectionSignature,
   desiredVariableSignature,
-  desiredStyleSignature
+  desiredStyleSignature,
+  libraryTargetForManifest,
+  libraryKindForManifest,
+  buildBindingTranslationRegistry
 } from '../../packages/figma-plugin-core/src/index.mjs';
 
 figma.showUI(__html__, { width: 620, height: 780, themeColors: true });
@@ -543,14 +546,61 @@ async function stampAppliedState(desired) {
   figma.root.setPluginData(BUFFERCORE_KEYS.bindingRegistry, JSON.stringify(registry));
 }
 
+function currentLibraryTarget() {
+  return figma.root.getPluginData(BUFFERCORE_KEYS.libraryTarget) || null;
+}
+
+function hasManagedBufferCoreState() {
+  return Boolean(figma.root.getPluginData(BUFFERCORE_KEYS.bindingRegistry));
+}
+
+function libraryTargetSafety(manifest) {
+  const requested = libraryTargetForManifest(manifest);
+  const current = currentLibraryTarget();
+  return {
+    requested,
+    current,
+    blocked: Boolean(current && current !== requested),
+    claimOnApply: Boolean(!current && hasManagedBufferCoreState())
+  };
+}
+
+function stampLibraryTarget(manifest) {
+  const target = libraryTargetForManifest(manifest);
+  figma.root.setPluginData(BUFFERCORE_KEYS.libraryTarget, target);
+  figma.root.setPluginData(BUFFERCORE_KEYS.libraryKind, libraryKindForManifest(manifest));
+
+  const raw = figma.root.getPluginData(BUFFERCORE_KEYS.bindingRegistry);
+  if (!raw) return;
+  try {
+    const registry = buildBindingTranslationRegistry(JSON.parse(raw));
+    figma.root.setPluginData(BUFFERCORE_KEYS.bindingTranslationRegistry, JSON.stringify(registry));
+  } catch {}
+}
+
 async function analyse(manifest) {
   const desired = buildDesiredModel(manifest);
   const snapshot = await localSnapshot();
   const diff = buildDiffSummary(desired, snapshot);
-  return { desired, diff, safety: syncSafety(diff), changeSummary: summariseDiffByKind(diff), manifestWarnings: manifest.diagnostics?.warnings || [] };
+  const target = libraryTargetSafety(manifest);
+  const safety = syncSafety(diff);
+  if (target.blocked) safety.blocked = true;
+  return {
+    desired,
+    diff,
+    safety,
+    libraryTarget: target,
+    library: manifest.library || null,
+    changeSummary: summariseDiffByKind(diff),
+    manifestWarnings: manifest.diagnostics?.warnings || []
+  };
 }
 
 async function apply(manifest) {
+  const target = libraryTargetSafety(manifest);
+  if (target.blocked) {
+    throw new Error(`This Figma file is locked to ${target.current}. Open the matching library file instead of applying ${target.requested} over it.`);
+  }
   const desired = buildDesiredModel(manifest);
   const beforeSnapshot = await localSnapshot();
   const beforeDiff = buildDiffSummary(desired, beforeSnapshot);
@@ -586,9 +636,18 @@ async function apply(manifest) {
   await cleanupRetiredVariables(desired, result);
   await cleanupLegacyCollections(result);
   await stampAppliedState(desired);
+  stampLibraryTarget(manifest);
   const snapshot = await localSnapshot();
   const diff = buildDiffSummary(desired, snapshot);
-  return { result, desired, diff, safety: syncSafety(diff), changeSummary: summariseDiffByKind(diff) };
+  return {
+    result,
+    desired,
+    diff,
+    safety: syncSafety(diff),
+    libraryTarget: libraryTargetSafety(manifest),
+    library: manifest.library || null,
+    changeSummary: summariseDiffByKind(diff)
+  };
 }
 
 figma.ui.onmessage = async (message) => {

@@ -43,11 +43,9 @@ test('sync performs one authenticated fetch then a local fast-forward-only merge
   const result = syncRepository('.', { run });
   assert.equal(result.changed, true);
   assert.equal(result.commit, 'def456');
-
   const fetches = calls.filter((call) => call[0] === 'git' && call[1] === 'fetch');
   assert.equal(fetches.length, 1);
   assert.deepEqual(fetches[0], ['git', 'fetch', '--prune', 'origin']);
-
   assert.ok(calls.some((call) => call.join(' ') === 'git merge --ff-only origin/main'));
   assert.equal(calls.some((call) => call[1] === 'pull'), false);
 });
@@ -73,13 +71,13 @@ test('repository metadata records both source repos and selected Flavour', () =>
 
 test('development plugin manifest allows only the local repository bridge', () => {
   const manifest = JSON.parse(fs.readFileSync(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.networkAccess.allowedDomains, ['none']);
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ['http://localhost:3847']);
   assert.deepEqual(manifest.networkAccess.devAllowedDomains, ['http://localhost:3847']);
 });
 
-test('plugin UI exposes repository pull, branch, commit and Flavour controls with manual fallback', () => {
+test('plugin UI separates Baseline and Flavour library workflows with manual fallback', () => {
   const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  for (const expected of ['Repository', 'Core branch', 'Core commit', 'Flavours branch', 'Pull + build', 'flavourSelect', 'Manual manifest fallback']) {
+  for (const expected of ['Repository', 'Baseline library', 'Flavour library', 'Pull + build Core', 'Pull + resolve', 'flavourSelect', 'Manual manifest fallback']) {
     assert.match(html, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });
@@ -119,11 +117,23 @@ test('repository bridge failures are visible in the plugin UI instead of silentl
   assert.match(html, /Repository bridge did not respond at \$\{BRIDGE_URL\}/);
 });
 
-test('Core baseline repository sync does not contact the Flavours repository', () => {
+test('Core baseline sync does not contact the Flavours repository', () => {
   const source = fs.readFileSync(new URL('../tools/sync-repository.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(flavour\) \{/);
-  assert.match(source, /Flavours\s+: not required for Core baseline/);
-  const flavourSyncIndex = source.indexOf('flavours = syncRepository');
-  const flavourGuardIndex = source.indexOf('if (flavour) {');
-  assert.ok(flavourGuardIndex >= 0 && flavourSyncIndex > flavourGuardIndex);
+  const guard = source.indexOf('if (flavour) {');
+  const sync = source.indexOf('flavours = syncRepository');
+  assert.ok(guard >= 0 && sync > guard);
+  assert.match(source, /not required for Core baseline/);
+});
+
+test('plugin locks a Figma file to one library target instead of layering Baseline and Flavour objects together', () => {
+  const source = fs.readFileSync(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(source, /buffercore\.libraryTarget|BUFFERCORE_KEYS\.libraryTarget/);
+  assert.match(source, /current && current !== requested/);
+  assert.match(source, /Open the matching library file instead of applying/);
+});
+
+test('plugin keeps a canonical binding translation registry for future Element and Component rebinding', () => {
+  const source = fs.readFileSync(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(source, /buildBindingTranslationRegistry/);
+  assert.match(source, /bindingTranslationRegistry/);
 });
