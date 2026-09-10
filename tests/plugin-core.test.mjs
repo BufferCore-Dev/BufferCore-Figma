@@ -343,15 +343,15 @@ test('canonical binding translation maps Core identities to this library own sta
   assert.equal(translateCanonicalBinding('missing', registry), null);
 });
 
-test('master component projection is captured from Baseline and persisted through the local bridge', async () => {
+test('master Figma asset projection is captured from Baseline and persisted through the local bridge', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
   const bridge = await fs.readFile(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(code, /captureMasterComponentCatalogue/);
+  assert.match(code, /registerMasterFigmaAssets/);
   assert.match(code, /sourceLibraryTarget: 'baseline'/);
-  assert.match(code, /\/component-catalog/);
-  assert.match(bridge, /req\.url === '\/component-catalog'/);
-  assert.match(bridge, /buffercore\.components\.json/);
+  assert.match(code, /\/master-assets/);
+  assert.match(bridge, /req\.url === '\/master-assets'/);
+  assert.match(bridge, /buffercore\.master-figma-assets\.json/);
 });
 
 test('Flavour component projection imports master components then rebinds detached structure to the Flavour registry', async () => {
@@ -374,7 +374,7 @@ test('projected Components update existing local component identities instead of
   assert.match(code, /masterComponentRevision/);
 });
 
-test('component sets preserve existing variants where canonical IDs still exist and remove only retired projected variants', async () => {
+test('projected component sets preserve existing variants where canonical IDs still exist and remove only retired projected variants', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
   assert.match(code, /projectComponentSet/);
@@ -386,7 +386,25 @@ test('component sets preserve existing variants where canonical IDs still exist 
 test('plugin UI exposes explicit master capture and Flavour component sync actions', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  assert.match(html, /Capture published Components/);
-  assert.match(html, /Sync master Components/);
-  assert.match(html, /Master owns component structure/);
+  assert.match(html, /Register \/ refresh Master Figma assets/);
+  assert.match(html, /Sync Master Figma assets/);
+  assert.match(html, /published BufferCore Figma master library owns design assets/);
+});
+
+
+test('published Figma master library remains authoritative and registry stores only identities/binding metadata', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /source: 'published-figma-master-library'/);
+  assert.match(code, /metadata only/);
+  assert.match(code, /importComponentByKeyAsync/);
+  assert.match(code, /registryMeta\.assets/);
+  assert.doesNotMatch(code, /source: 'git'.*assets/s);
+});
+
+test('master asset UI names Elements Components Patterns Templates and Layouts as Figma-authored publishable assets', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  for (const label of ['Elements', 'Components', 'Patterns', 'Templates', 'Layouts']) assert.match(html, new RegExp(label));
+  assert.match(html, /publishable Components\/Component Sets/);
 });

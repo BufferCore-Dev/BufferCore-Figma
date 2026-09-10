@@ -151,7 +151,7 @@
           </div>
           <div class="library-stats"><span id="baselineState" class="mini-chip">Ready</span></div>
           <div class="actions">
-            <button id="captureComponents" class="action">Capture published Components</button>
+            <button id="registerMasterAssets" class="action">Register / refresh Master Figma assets</button>
           </div>
         </div>
 
@@ -173,14 +173,14 @@
             <span id="flavourMappings" class="mini-chip">0 semantic mappings</span>
           </div>
           <div class="actions">
-            <button id="syncComponents" class="action" disabled>Sync master Components</button>
+            <button id="syncMasterAssets" class="action" disabled>Sync Master Figma assets</button>
           </div>
         </div>
       </div>
 
       <div class="repo-controls"><button id="repoRefresh" class="action">Refresh repository state</button></div>
       <div id="libraryTarget" class="target-banner">This Figma file has not been assigned as a Baseline or Flavour library yet.</div>
-      <div id="componentStatus" class="bridge-note">Master owns component structure. Flavour libraries receive projected copies rebound to their own resolved variables and styles.</div>
+      <div id="componentStatus" class="bridge-note">The published BufferCore Figma master library owns design assets. Elements, Components, Patterns, Templates and Layouts must be authored there as publishable Components/Component Sets. This plugin only registers their keys and projects the latest published versions into Flavour libraries with Flavour bindings.</div>
       <div id="bridgeNote" class="bridge-note">Repository sync uses the local BufferCore bridge. Start it with <strong>npm run repo:bridge</strong> in BufferCore-Figma.</div>
     </div>
     <details class="manual">
@@ -341,7 +341,7 @@
     const coreBlocked = Boolean(payload.syncing || payload.core?.dirty);
     $('baselineSync').disabled = coreBlocked;
     $('flavourSync').disabled = coreBlocked || Boolean(payload.flavoursRepository?.dirty) || !select.value;
-    $('captureComponents').disabled = coreBlocked;
+    $('registerMasterAssets').disabled = coreBlocked;
     $('baselineState').textContent = payload.core?.dirty ? 'Core has local changes' : `${payload.core?.branch || '—'} @ ${shortCommit(payload.core?.commit)}`;
 
     const library = payload.manifest?.library;
@@ -512,7 +512,7 @@
     } else if (target?.requested) {
       $('libraryTarget').textContent = `Ready to assign this file as ${target.requested} on first apply.`;
     }
-    $('syncComponents').disabled = !(target?.current || '').startsWith('flavour:');
+    $('syncMasterAssets').disabled = !(target?.current || '').startsWith('flavour:');
     renderWarnings(payload.manifestWarnings || payload.result?.warnings || []);
   }
 
@@ -581,18 +581,18 @@
     if (flavour) syncTarget(flavour);
   });
 
-  $('captureComponents').addEventListener('click', () => {
+  $('registerMasterAssets').addEventListener('click', () => {
     setError();
-    $('componentStatus').textContent = 'Capturing published master Components…';
-    $('captureComponents').disabled = true;
-    parent.postMessage({ pluginMessage: { type: 'capture-master-components' } }, '*');
+    $('componentStatus').textContent = 'Registering published Master Figma assets…';
+    $('registerMasterAssets').disabled = true;
+    parent.postMessage({ pluginMessage: { type: 'register-master-assets' } }, '*');
   });
 
-  $('syncComponents').addEventListener('click', () => {
+  $('syncMasterAssets').addEventListener('click', () => {
     setError();
-    $('componentStatus').textContent = 'Syncing master Components into this Flavour library…';
-    $('syncComponents').disabled = true;
-    parent.postMessage({ pluginMessage: { type: 'sync-master-components' } }, '*');
+    $('componentStatus').textContent = 'Syncing latest published Master Figma assets into this Flavour library…';
+    $('syncMasterAssets').disabled = true;
+    parent.postMessage({ pluginMessage: { type: 'sync-master-assets' } }, '*');
   });
 
   $('analyse').addEventListener('click', () => {
@@ -623,14 +623,14 @@
       else pending.reject(new Error(message.error || 'Repository bridge request failed.'));
       return;
     }
-    if (message.type === 'master-components-captured') {
-      $('componentStatus').textContent = `Captured ${message.payload.count} master component root(s) · ${message.payload.variantCount} variant(s). Publish the Baseline library after component changes, then sync each Flavour library.`;
-      $('captureComponents').disabled = false;
+    if (message.type === 'master-assets-registered') {
+      $('componentStatus').textContent = `Registered ${message.payload.count} published master asset(s) · ${message.payload.variantCount} variant(s). Figma remains the source of truth; refresh this registry after publishing master asset changes.`;
+      $('registerMasterAssets').disabled = false;
       return;
     }
-    if (message.type === 'master-components-synced') {
-      $('componentStatus').textContent = `Synced ${message.payload.count} master component root(s) into ${message.payload.target}. Existing projected component identities were updated in place.`;
-      $('syncComponents').disabled = false;
+    if (message.type === 'master-assets-synced') {
+      $('componentStatus').textContent = `Synced ${message.payload.count} latest published master asset(s) into ${message.payload.target}. Existing Flavour projections were updated in place and rebound to this Flavour.`;
+      $('syncMasterAssets').disabled = false;
       return;
     }
     if (message.type === 'analysis') {
@@ -651,8 +651,8 @@
       setError(message.message);
       $('analyse').disabled = false;
       $('apply').disabled = false;
-      $('captureComponents').disabled = false;
-      $('syncComponents').disabled = !(activeLibraryTarget || '').startsWith('flavour:');
+      $('registerMasterAssets').disabled = false;
+      $('syncMasterAssets').disabled = !(activeLibraryTarget || '').startsWith('flavour:');
     }
   };
 </script>

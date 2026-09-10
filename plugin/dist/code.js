@@ -865,7 +865,7 @@ function readBindingRegistry() {
   try { return JSON.parse(raw); } catch { return { collections: {}, variables: {}, styles: {} }; }
 }
 
-function componentRevision(entry) {
+function masterAssetRevision(entry) {
   return JSON.stringify({
     kind: entry.kind,
     name: entry.name,
@@ -874,7 +874,7 @@ function componentRevision(entry) {
   });
 }
 
-async function captureMasterComponentCatalogue() {
+async function registerMasterFigmaAssets() {
   const target = currentLibraryTarget();
   if (target && target !== 'baseline') {
     throw new Error(`Master components can only be captured from the Baseline library. This file is ${target}.`);
@@ -912,7 +912,7 @@ async function captureMasterComponentCatalogue() {
   }
 
   if (!components.length) {
-    throw new Error('No local published Components or Component Sets were found in this Baseline library.');
+    throw new Error('No publishable local Figma assets were found. Build Elements, Components, Patterns, Templates or Layouts as Components/Component Sets in the Baseline master library, publish it, then register them.');
   }
 
   const registry = readBindingRegistry();
@@ -932,26 +932,32 @@ async function captureMasterComponentCatalogue() {
     } catch {}
   }
 
-  const catalogue = {
-    schemaVersion: 1,
-    capturedAt: new Date().toISOString(),
+  const registryMeta = {
+    schemaVersion: 2,
+    registeredAt: new Date().toISOString(),
+    source: 'published-figma-master-library',
     sourceFile: figma.root.name || 'BufferCore Baseline',
     sourceLibraryTarget: 'baseline',
+
+    // This registry is deliberately metadata only. The published Figma library
+    // remains authoritative for structure, variants, component properties,
+    // nested components and visual design. Flavour sync imports those live
+    // published assets by key each time.
     bindingRegistry: registry,
     variableNames,
     styleNames,
-    components
+    assets: components
   };
 
-  await repositoryBridgeRequest('/component-catalog', {
+  await repositoryBridgeRequest('/master-assets', {
     method: 'POST',
-    body: JSON.stringify(catalogue)
+    body: JSON.stringify(registryMeta)
   });
 
   return {
     count: components.length,
     variantCount: components.reduce((sum, item) => sum + (item.variants?.length || 0), 0),
-    catalogue
+    registryMeta
   };
 }
 
@@ -967,24 +973,24 @@ async function styleForCanonical(registry, canonicalId) {
   try { return await figma.getStyleByIdAsync(id); } catch { return null; }
 }
 
-async function canonicalForSourceVariableAlias(alias, catalogue) {
+async function canonicalForSourceVariableAlias(alias, registryMeta) {
   if (!alias?.id) return null;
-  const direct = Object.entries(catalogue.bindingRegistry?.variables || {}).find(([, id]) => id === alias.id)?.[0];
+  const direct = Object.entries(registryMeta.bindingRegistry?.variables || {}).find(([, id]) => id === alias.id)?.[0];
   if (direct) return direct;
   try {
     const sourceVariable = await figma.variables.getVariableByIdAsync(alias.id);
-    if (sourceVariable?.name && catalogue.variableNames?.[sourceVariable.name]) {
-      return catalogue.variableNames[sourceVariable.name];
+    if (sourceVariable?.name && registryMeta.variableNames?.[sourceVariable.name]) {
+      return registryMeta.variableNames[sourceVariable.name];
     }
   } catch {}
   return null;
 }
 
-async function remapPaintBindings(paint, catalogue, targetRegistry) {
+async function remapPaintBindings(paint, registryMeta, targetRegistry) {
   if (!paint || typeof paint !== 'object' || !paint.boundVariables) return paint;
   let next = { ...paint };
   for (const [field, alias] of Object.entries(paint.boundVariables || {})) {
-    const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+    const canonicalId = await canonicalForSourceVariableAlias(alias, registryMeta);
     if (!canonicalId) continue;
     const target = await variableForCanonical(targetRegistry, canonicalId);
     if (!target) continue;
@@ -993,11 +999,11 @@ async function remapPaintBindings(paint, catalogue, targetRegistry) {
   return next;
 }
 
-async function remapEffectBindings(effect, catalogue, targetRegistry) {
+async function remapEffectBindings(effect, registryMeta, targetRegistry) {
   if (!effect || typeof effect !== 'object' || !effect.boundVariables) return effect;
   let next = { ...effect };
   for (const [field, alias] of Object.entries(effect.boundVariables || {})) {
-    const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+    const canonicalId = await canonicalForSourceVariableAlias(alias, registryMeta);
     if (!canonicalId) continue;
     const target = await variableForCanonical(targetRegistry, canonicalId);
     if (!target) continue;
@@ -1006,11 +1012,11 @@ async function remapEffectBindings(effect, catalogue, targetRegistry) {
   return next;
 }
 
-async function remapNodeBindings(node, catalogue, targetRegistry) {
+async function remapNodeBindings(node, registryMeta, targetRegistry) {
   if (node.boundVariables && typeof node.setBoundVariable === 'function') {
     for (const [field, aliasOrAliases] of Object.entries(node.boundVariables)) {
       const alias = Array.isArray(aliasOrAliases) ? aliasOrAliases[0] : aliasOrAliases;
-      const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+      const canonicalId = await canonicalForSourceVariableAlias(alias, registryMeta);
       if (!canonicalId) continue;
       const target = await variableForCanonical(targetRegistry, canonicalId);
       if (!target) continue;
@@ -1019,13 +1025,13 @@ async function remapNodeBindings(node, catalogue, targetRegistry) {
   }
 
   if ('fills' in node && node.fills !== figma.mixed && Array.isArray(node.fills)) {
-    try { node.fills = await Promise.all(node.fills.map((paint) => remapPaintBindings(paint, catalogue, targetRegistry))); } catch {}
+    try { node.fills = await Promise.all(node.fills.map((paint) => remapPaintBindings(paint, registryMeta, targetRegistry))); } catch {}
   }
   if ('strokes' in node && node.strokes !== figma.mixed && Array.isArray(node.strokes)) {
-    try { node.strokes = await Promise.all(node.strokes.map((paint) => remapPaintBindings(paint, catalogue, targetRegistry))); } catch {}
+    try { node.strokes = await Promise.all(node.strokes.map((paint) => remapPaintBindings(paint, registryMeta, targetRegistry))); } catch {}
   }
   if ('effects' in node && node.effects !== figma.mixed && Array.isArray(node.effects)) {
-    try { node.effects = await Promise.all(node.effects.map((effect) => remapEffectBindings(effect, catalogue, targetRegistry))); } catch {}
+    try { node.effects = await Promise.all(node.effects.map((effect) => remapEffectBindings(effect, registryMeta, targetRegistry))); } catch {}
   }
 
   const styleFields = [
@@ -1039,7 +1045,7 @@ async function remapNodeBindings(node, catalogue, targetRegistry) {
     if (!(field in node) || !node[field] || typeof node[setter] !== 'function') continue;
     let sourceStyle = null;
     try { sourceStyle = await figma.getStyleByIdAsync?.(node[field]); } catch {}
-    const canonicalId = sourceStyle?.name ? catalogue.styleNames?.[sourceStyle.name] : null;
+    const canonicalId = sourceStyle?.name ? registryMeta.styleNames?.[sourceStyle.name] : null;
     if (!canonicalId) continue;
     const targetStyle = await styleForCanonical(targetRegistry, canonicalId);
     if (!targetStyle) continue;
@@ -1047,7 +1053,7 @@ async function remapNodeBindings(node, catalogue, targetRegistry) {
   }
 
   if ('children' in node) {
-    for (const child of node.children) await remapNodeBindings(child, catalogue, targetRegistry);
+    for (const child of node.children) await remapNodeBindings(child, registryMeta, targetRegistry);
   }
 }
 
@@ -1089,10 +1095,10 @@ async function detachedFromRemoteComponent(remoteComponent) {
   return detached;
 }
 
-async function projectSingleComponent(entry, catalogue, targetRegistry, existingByCanonical) {
+async function projectSingleComponent(entry, registryMeta, targetRegistry, existingByCanonical) {
   const remote = await figma.importComponentByKeyAsync(entry.key);
   const detached = await detachedFromRemoteComponent(remote);
-  await remapNodeBindings(detached, catalogue, targetRegistry);
+  await remapNodeBindings(detached, registryMeta, targetRegistry);
 
   let target = existingByCanonical.get(entry.canonicalId);
   if (!target || target.type !== 'COMPONENT') {
@@ -1105,11 +1111,11 @@ async function projectSingleComponent(entry, catalogue, targetRegistry, existing
   target.name = entry.name;
   target.setPluginData(COMPONENT_KEYS.masterComponentId, entry.canonicalId);
   target.setPluginData(COMPONENT_KEYS.masterComponentKey, entry.key);
-  target.setPluginData(COMPONENT_KEYS.masterComponentRevision, componentRevision(entry));
+  target.setPluginData(COMPONENT_KEYS.masterComponentRevision, masterAssetRevision(entry));
   return target;
 }
 
-async function projectComponentSet(entry, catalogue, targetRegistry, existingByCanonical) {
+async function projectComponentSet(entry, registryMeta, targetRegistry, existingByCanonical) {
   const existingSet = existingByCanonical.get(entry.canonicalId);
   const existingVariants = new Map();
   if (existingSet?.type === 'COMPONENT_SET') {
@@ -1124,7 +1130,7 @@ async function projectComponentSet(entry, catalogue, targetRegistry, existingByC
   for (const variant of entry.variants || []) {
     const remote = await figma.importComponentByKeyAsync(variant.key);
     const detached = await detachedFromRemoteComponent(remote);
-    await remapNodeBindings(detached, catalogue, targetRegistry);
+    await remapNodeBindings(detached, registryMeta, targetRegistry);
 
     let local = existingVariants.get(variant.canonicalId);
     if (local) {
@@ -1160,20 +1166,20 @@ async function projectComponentSet(entry, catalogue, targetRegistry, existingByC
   set.name = entry.name;
   set.setPluginData(COMPONENT_KEYS.masterComponentId, entry.canonicalId);
   set.setPluginData(COMPONENT_KEYS.masterComponentKey, entry.key);
-  set.setPluginData(COMPONENT_KEYS.masterComponentRevision, componentRevision(entry));
+  set.setPluginData(COMPONENT_KEYS.masterComponentRevision, masterAssetRevision(entry));
   return set;
 }
 
-async function syncProjectedComponentsFromMaster() {
+async function syncMasterFigmaAssets() {
   const target = currentLibraryTarget();
   if (!target || !target.startsWith('flavour:')) {
-    throw new Error('Apply the selected Flavour foundations to this dedicated Flavour library before syncing master Components.');
+    throw new Error('Apply the selected Flavour foundations to this dedicated Flavour library before syncing master Figma assets.');
   }
 
-  const response = await repositoryBridgeRequest('/component-catalog');
-  const catalogue = response.catalogue;
-  if (!catalogue?.components?.length) {
-    throw new Error('No master component catalogue exists yet. Open the Baseline library and capture its published Components first.');
+  const response = await repositoryBridgeRequest('/master-assets');
+  const registryMeta = response.registry;
+  if (!registryMeta?.assets?.length) {
+    throw new Error('No master component registryMeta exists yet. Open the Baseline library and capture its published Components first.');
   }
 
   const targetRegistry = readBindingRegistry();
@@ -1185,19 +1191,19 @@ async function syncProjectedComponentsFromMaster() {
   );
 
   let createdOrUpdated = 0;
-  for (const entry of catalogue.components) {
+  for (const entry of registryMeta.assets) {
     if (entry.kind === 'COMPONENT_SET') {
-      const node = await projectComponentSet(entry, catalogue, targetRegistry, existingByCanonical);
+      const node = await projectComponentSet(entry, registryMeta, targetRegistry, existingByCanonical);
       if (node) createdOrUpdated += 1;
     } else {
-      await projectSingleComponent(entry, catalogue, targetRegistry, existingByCanonical);
+      await projectSingleComponent(entry, registryMeta, targetRegistry, existingByCanonical);
       createdOrUpdated += 1;
     }
   }
 
   return {
     count: createdOrUpdated,
-    sourceCapturedAt: catalogue.capturedAt,
+    sourceRegisteredAt: registryMeta.registeredAt,
     target
   };
 }
@@ -1318,12 +1324,12 @@ figma.ui.onmessage = async (message) => {
       }
       return;
     }
-    if (message?.type === 'capture-master-components') {
-      figma.ui.postMessage({ type: 'master-components-captured', payload: await captureMasterComponentCatalogue() });
+    if (message?.type === 'register-master-assets') {
+      figma.ui.postMessage({ type: 'master-assets-registered', payload: await registerMasterFigmaAssets() });
       return;
     }
-    if (message?.type === 'sync-master-components') {
-      figma.ui.postMessage({ type: 'master-components-synced', payload: await syncProjectedComponentsFromMaster() });
+    if (message?.type === 'sync-master-assets') {
+      figma.ui.postMessage({ type: 'master-assets-synced', payload: await syncMasterFigmaAssets() });
       return;
     }
     if (message?.type === 'analyse') {
