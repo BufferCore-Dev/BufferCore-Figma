@@ -342,3 +342,51 @@ test('canonical binding translation maps Core identities to this library own sta
   });
   assert.equal(translateCanonicalBinding('missing', registry), null);
 });
+
+test('master component projection is captured from Baseline and persisted through the local bridge', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const bridge = await fs.readFile(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(code, /captureMasterComponentCatalogue/);
+  assert.match(code, /sourceLibraryTarget: 'baseline'/);
+  assert.match(code, /\/component-catalog/);
+  assert.match(bridge, /req\.url === '\/component-catalog'/);
+  assert.match(bridge, /buffercore\.components\.json/);
+});
+
+test('Flavour component projection imports master components then rebinds detached structure to the Flavour registry', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /importComponentByKeyAsync/);
+  assert.match(code, /detachInstance/);
+  assert.match(code, /remapNodeBindings/);
+  assert.match(code, /setBoundVariableForPaint/);
+  assert.match(code, /setBoundVariableForEffect/);
+  assert.match(code, /targetRegistry/);
+});
+
+test('projected Components update existing local component identities instead of delete and recreate', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /existingByCanonical/);
+  assert.match(code, /replaceComponentContents/);
+  assert.match(code, /masterComponentId/);
+  assert.match(code, /masterComponentRevision/);
+});
+
+test('component sets preserve existing variants where canonical IDs still exist and remove only retired projected variants', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /projectComponentSet/);
+  assert.match(code, /existingVariants/);
+  assert.match(code, /figma\.combineAsVariants/);
+  assert.match(code, /wanted\.has\(id\)/);
+});
+
+test('plugin UI exposes explicit master capture and Flavour component sync actions', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /Capture published Components/);
+  assert.match(html, /Sync master Components/);
+  assert.match(html, /Master owns component structure/);
+});

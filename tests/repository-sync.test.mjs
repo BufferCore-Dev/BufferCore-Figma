@@ -137,3 +137,10 @@ test('plugin keeps a canonical binding translation registry for future Element a
   assert.match(source, /buildBindingTranslationRegistry/);
   assert.match(source, /bindingTranslationRegistry/);
 });
+
+test('repository bridge persists the master component catalogue for downstream Flavour libraries', () => {
+  const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(source, /componentCatalogPath/);
+  assert.match(source, /GET' && req\.url === '\/component-catalog'/);
+  assert.match(source, /POST' && req\.url === '\/component-catalog'/);
+});

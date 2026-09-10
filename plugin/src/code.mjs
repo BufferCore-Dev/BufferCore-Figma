@@ -546,6 +546,383 @@ async function stampAppliedState(desired) {
   figma.root.setPluginData(BUFFERCORE_KEYS.bindingRegistry, JSON.stringify(registry));
 }
 
+
+const COMPONENT_KEYS = Object.freeze({
+  componentId: 'buffercore.componentId',
+  masterComponentId: 'buffercore.masterComponentId',
+  masterComponentKey: 'buffercore.masterComponentKey',
+  masterComponentRevision: 'buffercore.masterComponentRevision'
+});
+
+function slug(value) {
+  return String(value || 'component')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'component';
+}
+
+function ensureCanonicalComponentId(node, prefix = 'component') {
+  const existing = node.getPluginData(COMPONENT_KEYS.componentId);
+  if (existing) return existing;
+  const id = `${prefix}:${slug(node.name)}:${String(node.id).replace(/[^a-zA-Z0-9]+/g, '-')}`;
+  node.setPluginData(COMPONENT_KEYS.componentId, id);
+  return id;
+}
+
+function localComponentRoots() {
+  const nodes = figma.root.findAllWithCriteria
+    ? figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] })
+    : figma.root.findAll((node) => node.type === 'COMPONENT' || node.type === 'COMPONENT_SET');
+  return nodes.filter((node) => {
+    if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') return false;
+    return !node.remote;
+  });
+}
+
+function readBindingRegistry() {
+  const raw = figma.root.getPluginData(BUFFERCORE_KEYS.bindingRegistry);
+  if (!raw) return { collections: {}, variables: {}, styles: {} };
+  try { return JSON.parse(raw); } catch { return { collections: {}, variables: {}, styles: {} }; }
+}
+
+function componentRevision(entry) {
+  return JSON.stringify({
+    kind: entry.kind,
+    name: entry.name,
+    key: entry.key,
+    variants: entry.variants || []
+  });
+}
+
+async function captureMasterComponentCatalogue() {
+  const target = currentLibraryTarget();
+  if (target && target !== 'baseline') {
+    throw new Error(`Master components can only be captured from the Baseline library. This file is ${target}.`);
+  }
+
+  const roots = localComponentRoots();
+  const components = [];
+  for (const node of roots) {
+    if (!node.key) continue;
+    if (node.type === 'COMPONENT_SET') {
+      const canonicalId = ensureCanonicalComponentId(node, 'component-set');
+      const variants = node.children
+        .filter((child) => child.type === 'COMPONENT')
+        .map((child) => ({
+          canonicalId: ensureCanonicalComponentId(child, `${canonicalId}/variant`),
+          key: child.key,
+          name: child.name
+        }));
+      components.push({
+        canonicalId,
+        kind: 'COMPONENT_SET',
+        key: node.key,
+        name: node.name,
+        variants
+      });
+    } else {
+      components.push({
+        canonicalId: ensureCanonicalComponentId(node, 'component'),
+        kind: 'COMPONENT',
+        key: node.key,
+        name: node.name,
+        variants: []
+      });
+    }
+  }
+
+  if (!components.length) {
+    throw new Error('No local published Components or Component Sets were found in this Baseline library.');
+  }
+
+  const registry = readBindingRegistry();
+  const variableNames = {};
+  for (const [canonicalId, figmaId] of Object.entries(registry.variables || {})) {
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(figmaId);
+      if (variable) variableNames[variable.name] = canonicalId;
+    } catch {}
+  }
+
+  const styleNames = {};
+  for (const [canonicalId, figmaId] of Object.entries(registry.styles || {})) {
+    try {
+      const style = await figma.getStyleByIdAsync?.(figmaId);
+      if (style) styleNames[style.name] = canonicalId;
+    } catch {}
+  }
+
+  const catalogue = {
+    schemaVersion: 1,
+    capturedAt: new Date().toISOString(),
+    sourceFile: figma.root.name || 'BufferCore Baseline',
+    sourceLibraryTarget: 'baseline',
+    bindingRegistry: registry,
+    variableNames,
+    styleNames,
+    components
+  };
+
+  await repositoryBridgeRequest('/component-catalog', {
+    method: 'POST',
+    body: JSON.stringify(catalogue)
+  });
+
+  return {
+    count: components.length,
+    variantCount: components.reduce((sum, item) => sum + (item.variants?.length || 0), 0),
+    catalogue
+  };
+}
+
+async function variableForCanonical(registry, canonicalId) {
+  const id = registry?.variables?.[canonicalId];
+  if (!id) return null;
+  try { return await figma.variables.getVariableByIdAsync(id); } catch { return null; }
+}
+
+async function styleForCanonical(registry, canonicalId) {
+  const id = registry?.styles?.[canonicalId];
+  if (!id || typeof figma.getStyleByIdAsync !== 'function') return null;
+  try { return await figma.getStyleByIdAsync(id); } catch { return null; }
+}
+
+async function canonicalForSourceVariableAlias(alias, catalogue) {
+  if (!alias?.id) return null;
+  const direct = Object.entries(catalogue.bindingRegistry?.variables || {}).find(([, id]) => id === alias.id)?.[0];
+  if (direct) return direct;
+  try {
+    const sourceVariable = await figma.variables.getVariableByIdAsync(alias.id);
+    if (sourceVariable?.name && catalogue.variableNames?.[sourceVariable.name]) {
+      return catalogue.variableNames[sourceVariable.name];
+    }
+  } catch {}
+  return null;
+}
+
+async function remapPaintBindings(paint, catalogue, targetRegistry) {
+  if (!paint || typeof paint !== 'object' || !paint.boundVariables) return paint;
+  let next = { ...paint };
+  for (const [field, alias] of Object.entries(paint.boundVariables || {})) {
+    const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+    if (!canonicalId) continue;
+    const target = await variableForCanonical(targetRegistry, canonicalId);
+    if (!target) continue;
+    try { next = figma.variables.setBoundVariableForPaint(next, field, target); } catch {}
+  }
+  return next;
+}
+
+async function remapEffectBindings(effect, catalogue, targetRegistry) {
+  if (!effect || typeof effect !== 'object' || !effect.boundVariables) return effect;
+  let next = { ...effect };
+  for (const [field, alias] of Object.entries(effect.boundVariables || {})) {
+    const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+    if (!canonicalId) continue;
+    const target = await variableForCanonical(targetRegistry, canonicalId);
+    if (!target) continue;
+    try { next = figma.variables.setBoundVariableForEffect(next, field, target); } catch {}
+  }
+  return next;
+}
+
+async function remapNodeBindings(node, catalogue, targetRegistry) {
+  if (node.boundVariables && typeof node.setBoundVariable === 'function') {
+    for (const [field, aliasOrAliases] of Object.entries(node.boundVariables)) {
+      const alias = Array.isArray(aliasOrAliases) ? aliasOrAliases[0] : aliasOrAliases;
+      const canonicalId = await canonicalForSourceVariableAlias(alias, catalogue);
+      if (!canonicalId) continue;
+      const target = await variableForCanonical(targetRegistry, canonicalId);
+      if (!target) continue;
+      try { node.setBoundVariable(field, target); } catch {}
+    }
+  }
+
+  if ('fills' in node && node.fills !== figma.mixed && Array.isArray(node.fills)) {
+    try { node.fills = await Promise.all(node.fills.map((paint) => remapPaintBindings(paint, catalogue, targetRegistry))); } catch {}
+  }
+  if ('strokes' in node && node.strokes !== figma.mixed && Array.isArray(node.strokes)) {
+    try { node.strokes = await Promise.all(node.strokes.map((paint) => remapPaintBindings(paint, catalogue, targetRegistry))); } catch {}
+  }
+  if ('effects' in node && node.effects !== figma.mixed && Array.isArray(node.effects)) {
+    try { node.effects = await Promise.all(node.effects.map((effect) => remapEffectBindings(effect, catalogue, targetRegistry))); } catch {}
+  }
+
+  const styleFields = [
+    ['fillStyleId', 'setFillStyleIdAsync'],
+    ['strokeStyleId', 'setStrokeStyleIdAsync'],
+    ['textStyleId', 'setTextStyleIdAsync'],
+    ['effectStyleId', 'setEffectStyleIdAsync'],
+    ['gridStyleId', 'setGridStyleIdAsync']
+  ];
+  for (const [field, setter] of styleFields) {
+    if (!(field in node) || !node[field] || typeof node[setter] !== 'function') continue;
+    let sourceStyle = null;
+    try { sourceStyle = await figma.getStyleByIdAsync?.(node[field]); } catch {}
+    const canonicalId = sourceStyle?.name ? catalogue.styleNames?.[sourceStyle.name] : null;
+    if (!canonicalId) continue;
+    const targetStyle = await styleForCanonical(targetRegistry, canonicalId);
+    if (!targetStyle) continue;
+    try { await node[setter](targetStyle.id); } catch {}
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) await remapNodeBindings(child, catalogue, targetRegistry);
+  }
+}
+
+function copyNodeSurface(source, target) {
+  const fields = [
+    'layoutMode', 'primaryAxisSizingMode', 'counterAxisSizingMode',
+    'primaryAxisAlignItems', 'counterAxisAlignItems', 'counterAxisAlignContent',
+    'paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom', 'itemSpacing',
+    'counterAxisSpacing', 'layoutWrap', 'clipsContent', 'opacity',
+    'blendMode', 'rotation', 'cornerRadius', 'topLeftRadius', 'topRightRadius',
+    'bottomLeftRadius', 'bottomRightRadius', 'strokeWeight', 'strokeAlign',
+    'strokeCap', 'strokeJoin', 'dashPattern', 'constraints', 'layoutAlign', 'layoutGrow'
+  ];
+  for (const field of fields) {
+    if (!(field in source) || !(field in target)) continue;
+    try { target[field] = source[field]; } catch {}
+  }
+  for (const field of ['fills', 'strokes', 'effects']) {
+    if (!(field in source) || !(field in target) || source[field] === figma.mixed) continue;
+    try { target[field] = source[field]; } catch {}
+  }
+  try { target.resizeWithoutConstraints(source.width, source.height); } catch {}
+}
+
+function replaceComponentContents(source, target) {
+  copyNodeSurface(source, target);
+  const oldChildren = [...target.children];
+  for (const child of oldChildren) {
+    try { child.remove(); } catch {}
+  }
+  for (const child of source.children) {
+    try { target.appendChild(child.clone()); } catch {}
+  }
+}
+
+async function detachedFromRemoteComponent(remoteComponent) {
+  const instance = remoteComponent.createInstance();
+  const detached = instance.detachInstance();
+  return detached;
+}
+
+async function projectSingleComponent(entry, catalogue, targetRegistry, existingByCanonical) {
+  const remote = await figma.importComponentByKeyAsync(entry.key);
+  const detached = await detachedFromRemoteComponent(remote);
+  await remapNodeBindings(detached, catalogue, targetRegistry);
+
+  let target = existingByCanonical.get(entry.canonicalId);
+  if (!target || target.type !== 'COMPONENT') {
+    target = figma.createComponentFromNode(detached);
+  } else {
+    replaceComponentContents(detached, target);
+    try { detached.remove(); } catch {}
+  }
+
+  target.name = entry.name;
+  target.setPluginData(COMPONENT_KEYS.masterComponentId, entry.canonicalId);
+  target.setPluginData(COMPONENT_KEYS.masterComponentKey, entry.key);
+  target.setPluginData(COMPONENT_KEYS.masterComponentRevision, componentRevision(entry));
+  return target;
+}
+
+async function projectComponentSet(entry, catalogue, targetRegistry, existingByCanonical) {
+  const existingSet = existingByCanonical.get(entry.canonicalId);
+  const existingVariants = new Map();
+  if (existingSet?.type === 'COMPONENT_SET') {
+    for (const child of existingSet.children) {
+      if (child.type !== 'COMPONENT') continue;
+      const id = child.getPluginData(COMPONENT_KEYS.masterComponentId);
+      if (id) existingVariants.set(id, child);
+    }
+  }
+
+  const projected = [];
+  for (const variant of entry.variants || []) {
+    const remote = await figma.importComponentByKeyAsync(variant.key);
+    const detached = await detachedFromRemoteComponent(remote);
+    await remapNodeBindings(detached, catalogue, targetRegistry);
+
+    let local = existingVariants.get(variant.canonicalId);
+    if (local) {
+      replaceComponentContents(detached, local);
+      try { detached.remove(); } catch {}
+    } else {
+      local = figma.createComponentFromNode(detached);
+    }
+    local.name = variant.name;
+    local.setPluginData(COMPONENT_KEYS.masterComponentId, variant.canonicalId);
+    local.setPluginData(COMPONENT_KEYS.masterComponentKey, variant.key);
+    projected.push(local);
+  }
+
+  let set = existingSet;
+  if (!set || set.type !== 'COMPONENT_SET') {
+    if (!projected.length) return null;
+    set = figma.combineAsVariants(projected, figma.currentPage);
+  } else {
+    for (const local of projected) {
+      if (local.parent !== set) set.appendChild(local);
+    }
+    const wanted = new Set((entry.variants || []).map((item) => item.canonicalId));
+    for (const child of [...set.children]) {
+      if (child.type !== 'COMPONENT') continue;
+      const id = child.getPluginData(COMPONENT_KEYS.masterComponentId);
+      if (id && !wanted.has(id)) {
+        try { child.remove(); } catch {}
+      }
+    }
+  }
+
+  set.name = entry.name;
+  set.setPluginData(COMPONENT_KEYS.masterComponentId, entry.canonicalId);
+  set.setPluginData(COMPONENT_KEYS.masterComponentKey, entry.key);
+  set.setPluginData(COMPONENT_KEYS.masterComponentRevision, componentRevision(entry));
+  return set;
+}
+
+async function syncProjectedComponentsFromMaster() {
+  const target = currentLibraryTarget();
+  if (!target || !target.startsWith('flavour:')) {
+    throw new Error('Apply the selected Flavour foundations to this dedicated Flavour library before syncing master Components.');
+  }
+
+  const response = await repositoryBridgeRequest('/component-catalog');
+  const catalogue = response.catalogue;
+  if (!catalogue?.components?.length) {
+    throw new Error('No master component catalogue exists yet. Open the Baseline library and capture its published Components first.');
+  }
+
+  const targetRegistry = readBindingRegistry();
+  const existing = localComponentRoots();
+  const existingByCanonical = new Map(
+    existing
+      .map((node) => [node.getPluginData(COMPONENT_KEYS.masterComponentId), node])
+      .filter(([id]) => id)
+  );
+
+  let createdOrUpdated = 0;
+  for (const entry of catalogue.components) {
+    if (entry.kind === 'COMPONENT_SET') {
+      const node = await projectComponentSet(entry, catalogue, targetRegistry, existingByCanonical);
+      if (node) createdOrUpdated += 1;
+    } else {
+      await projectSingleComponent(entry, catalogue, targetRegistry, existingByCanonical);
+      createdOrUpdated += 1;
+    }
+  }
+
+  return {
+    count: createdOrUpdated,
+    sourceCapturedAt: catalogue.capturedAt,
+    target
+  };
+}
+
 function currentLibraryTarget() {
   return figma.root.getPluginData(BUFFERCORE_KEYS.libraryTarget) || null;
 }
@@ -660,6 +1037,14 @@ figma.ui.onmessage = async (message) => {
       } catch (error) {
         figma.ui.postMessage({ type: 'bridge-response', requestId, ok: false, error: serialiseError(error) });
       }
+      return;
+    }
+    if (message?.type === 'capture-master-components') {
+      figma.ui.postMessage({ type: 'master-components-captured', payload: await captureMasterComponentCatalogue() });
+      return;
+    }
+    if (message?.type === 'sync-master-components') {
+      figma.ui.postMessage({ type: 'master-components-synced', payload: await syncProjectedComponentsFromMaster() });
       return;
     }
     if (message?.type === 'analyse') {

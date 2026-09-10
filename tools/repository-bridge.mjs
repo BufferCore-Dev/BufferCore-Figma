@@ -14,6 +14,7 @@ const systemRoot = path.resolve(root, '..');
 const corePath = path.resolve(systemRoot, 'BufferCore');
 const flavoursPath = path.resolve(systemRoot, 'BufferCore-Flavours');
 const manifestPath = path.resolve(root, 'generated', 'figma', 'buffercore.figma.json');
+const componentCatalogPath = path.resolve(root, 'generated', 'figma', 'buffercore.components.json');
 const port = Number(process.env.BUFFERCORE_FIGMA_BRIDGE_PORT || 3847);
 let syncing = false;
 
@@ -123,6 +124,22 @@ const server = http.createServer(async (req, res) => {
     const manifest = readJson(manifestPath);
     if (!manifest) return json(res, 404, { ok: false, error: 'No generated Figma manifest exists yet.' });
     return json(res, 200, { ok: true, manifest });
+  }
+  if (req.method === 'GET' && req.url === '/component-catalog') {
+    const catalogue = readJson(componentCatalogPath);
+    if (!catalogue) return json(res, 404, { ok: false, error: 'No master component catalogue has been captured yet.' });
+    return json(res, 200, { ok: true, catalogue });
+  }
+  if (req.method === 'POST' && req.url === '/component-catalog') {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let catalogue = null;
+    try { catalogue = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false, error: 'Invalid component catalogue JSON.' }); }
+    if (!Array.isArray(catalogue.components)) return json(res, 400, { ok: false, error: 'Component catalogue must contain a components array.' });
+    fs.mkdirSync(path.dirname(componentCatalogPath), { recursive: true });
+    fs.writeFileSync(componentCatalogPath, JSON.stringify(catalogue, null, 2) + '\n', 'utf8');
+    return json(res, 200, { ok: true, count: catalogue.components.length, capturedAt: catalogue.capturedAt || null });
   }
   if (req.method === 'POST' && req.url === '/sync') {
     let raw = '';
