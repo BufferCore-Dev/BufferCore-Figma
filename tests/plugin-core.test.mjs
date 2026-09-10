@@ -383,11 +383,11 @@ test('projected component sets preserve existing variants where canonical IDs st
   assert.match(code, /wanted\.has\(id\)/);
 });
 
-test('plugin UI exposes explicit master capture and Flavour component sync actions', async () => {
+test('plugin UI exposes explicit library-family registration and Flavour layer sync actions', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  assert.match(html, /Register \/ refresh Master Figma assets/);
-  assert.match(html, /Sync Master Figma assets/);
+  assert.match(html, /Register this Figma file/);
+  assert.match(html, /Sync this Flavour layer/);
   assert.match(html, /published BufferCore Figma master library owns design assets/);
 });
 
@@ -407,4 +407,56 @@ test('master asset UI names Elements Components Patterns Templates and Layouts a
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
   for (const label of ['Elements', 'Components', 'Patterns', 'Templates', 'Layouts']) assert.match(html, new RegExp(label));
   assert.match(html, /publishable Components\/Component Sets/);
+});
+
+
+test('Figma library family uses the six BufferCore design files with dependency-aware projection', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  for (const layer of ['foundations', 'elements', 'components', 'layout', 'templates', 'pages']) {
+    assert.match(code, new RegExp(`id: '${layer}'`));
+  }
+  assert.match(code, /components'.*dependencies: \['foundations', 'elements'\]/s);
+  assert.match(code, /layout'.*dependencies: \['foundations', 'elements', 'components'\]/s);
+  assert.match(code, /templates'.*dependencies: \['foundations', 'elements', 'components', 'layout'\]/s);
+  assert.match(code, /pages'.*dependencies: \['foundations', 'elements', 'components', 'layout', 'templates'\]/s);
+});
+
+test('non-Foundation Flavour sync reads current published BC assets and translates nested master instances to upstream Flavour assets', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /syncSystemLayer/);
+  assert.match(code, /assertLayerDependencies/);
+  assert.match(code, /remapNestedMasterInstances/);
+  assert.match(code, /swapComponent/);
+  assert.match(code, /flavourAssetKeyByCanonical/);
+  assert.match(code, /assertNoResidualMasterDependencies/);
+});
+
+test('Flavour family imports published Flavour Foundation variables and styles by library key rather than requiring local duplicate Foundations', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /importVariableByKeyAsync/);
+  assert.match(code, /importStyleByKeyAsync/);
+  assert.match(code, /family\.layers\?\.foundations\?\.flavour/);
+});
+
+test('Figma-authored asset identity remains stable across projections and resyncs', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /masterComponentId/);
+  assert.match(code, /existingByCanonical/);
+  assert.match(code, /replaceComponentContents/);
+  assert.match(code, /masterComponentRevision/);
+});
+
+test('family UI exposes all six master and Flavour layers instead of one monolithic master library', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  for (const label of ['BC: Foundations','BC: Elements','BC: Components','BC: Layout','BC: Templates','BC: Pages']) {
+    assert.ok(html.includes(label), `Missing ${label}`);
+  }
+  assert.match(html, /Register this Figma file/);
+  assert.match(html, /Sync this Flavour layer/);
+  assert.match(html, /BufferCore system layers/);
 });

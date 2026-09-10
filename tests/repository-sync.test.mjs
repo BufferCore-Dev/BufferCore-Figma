@@ -144,3 +144,14 @@ test('repository bridge persists the master Figma asset registry for downstream 
   assert.match(source, /GET' && req\.url === '\/master-assets'/);
   assert.match(source, /POST' && req\.url === '\/master-assets'/);
 });
+
+
+test('repository bridge persists the six-layer Figma library family separately for master and each Flavour', () => {
+  const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(source, /buffercore\.library-family\.json/);
+  assert.match(source, /LIBRARY_FAMILY_LAYERS/);
+  assert.match(source, /\/library-family\/register/);
+  assert.match(source, /\/library-family\/status/);
+  assert.match(source, /family\.masters\[layer\]/);
+  assert.match(source, /family\.flavours\[payload\.flavourId\]\[layer\]/);
+});

@@ -106,6 +106,15 @@
   .library-name { font-weight:750; }
   .library-kicker { display:block; color:var(--figma-color-text-secondary); font-size:10px; text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px; }
   .library-meta { color:var(--figma-color-text-secondary); font-size:11px; line-height:1.35; }
+
+  .family-controls { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
+  .family-controls select { width:100%; min-height:34px; border:1px solid var(--figma-color-border); border-radius:7px; background:var(--figma-color-bg); color:var(--figma-color-text); padding:0 9px; }
+  .family-table { border:1px solid var(--figma-color-border); border-radius:8px; overflow:hidden; margin-top:10px; }
+  .family-row { display:grid; grid-template-columns:1.2fr .85fr .85fr; gap:8px; align-items:center; padding:8px 10px; border-bottom:1px solid var(--figma-color-border); background:var(--figma-color-bg); }
+  .family-row:last-child { border-bottom:0; }
+  .family-row strong { font-size:11px; }
+  .family-state { font-size:10px; color:var(--figma-color-text-secondary); }
+  .family-state.ready { color:var(--figma-color-text-success, var(--figma-color-text)); font-weight:700; }
   .library-stats { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .mini-chip { border:1px solid var(--figma-color-border); border-radius:999px; padding:4px 7px; color:var(--figma-color-text-secondary); font-size:10px; }
   .target-banner { margin-top:10px; padding:8px 10px; border-radius:7px; background:var(--figma-color-bg-secondary); color:var(--figma-color-text-secondary); font-size:11px; }
@@ -150,9 +159,7 @@
             <button id="baselineSync" class="action primary">Pull + build Core</button>
           </div>
           <div class="library-stats"><span id="baselineState" class="mini-chip">Ready</span></div>
-          <div class="actions">
-            <button id="registerMasterAssets" class="action">Register / refresh Master Figma assets</button>
-          </div>
+          <div class="actions" hidden><button id="registerMasterAssets" class="action">Legacy master asset registration</button></div>
         </div>
 
         <div class="library-block">
@@ -172,10 +179,46 @@
             <span id="flavourInherited" class="mini-chip">— inherited primitives</span>
             <span id="flavourMappings" class="mini-chip">0 semantic mappings</span>
           </div>
-          <div class="actions">
-            <button id="syncMasterAssets" class="action" disabled>Sync Master Figma assets</button>
+          <div class="actions" hidden><button id="syncMasterAssets" class="action" disabled>Legacy master asset sync</button></div>
+        </div>
+      </div>
+
+      <div class="library-block" style="margin-top:12px">
+        <div class="library-head">
+          <div>
+            <span class="library-kicker">Figma library family</span>
+            <div class="library-name">BufferCore system layers</div>
+            <div class="library-meta">Each BC file remains authoritative for its own Figma-authored layer. Flavour files mirror the same layer and translate dependencies to the Flavour family.</div>
           </div>
         </div>
+        <div class="family-controls">
+          <select id="systemLayer">
+            <option value="foundations">BC: Foundations</option>
+            <option value="elements">BC: Elements</option>
+            <option value="components">BC: Components</option>
+            <option value="layout">BC: Layout</option>
+            <option value="templates">BC: Templates</option>
+            <option value="pages">BC: Pages</option>
+          </select>
+          <select id="systemRole">
+            <option value="master">BufferCore master file</option>
+            <option value="flavour">Flavour mirror file</option>
+          </select>
+        </div>
+        <div class="actions" style="margin-top:0">
+          <button id="registerSystemLayer" class="action">Register this Figma file</button>
+          <button id="syncSystemLayer" class="action primary" disabled>Sync this Flavour layer</button>
+          <button id="familyRefresh" class="action">Refresh family status</button>
+        </div>
+        <div id="familyStatus" class="family-table">
+          <div class="family-row"><strong>Foundations</strong><span class="family-state" data-master-layer="foundations">Master —</span><span class="family-state" data-flavour-layer="foundations">Flavour —</span></div>
+          <div class="family-row"><strong>Elements</strong><span class="family-state" data-master-layer="elements">Master —</span><span class="family-state" data-flavour-layer="elements">Flavour —</span></div>
+          <div class="family-row"><strong>Components</strong><span class="family-state" data-master-layer="components">Master —</span><span class="family-state" data-flavour-layer="components">Flavour —</span></div>
+          <div class="family-row"><strong>Layout</strong><span class="family-state" data-master-layer="layout">Master —</span><span class="family-state" data-flavour-layer="layout">Flavour —</span></div>
+          <div class="family-row"><strong>Templates</strong><span class="family-state" data-master-layer="templates">Master —</span><span class="family-state" data-flavour-layer="templates">Flavour —</span></div>
+          <div class="family-row"><strong>Pages</strong><span class="family-state" data-master-layer="pages">Master —</span><span class="family-state" data-flavour-layer="pages">Flavour —</span></div>
+        </div>
+        <div id="systemStatusNote" class="bridge-note">Foundations come from Git/Core. All other layers are authored and published in their matching BC Figma files.</div>
       </div>
 
       <div class="repo-controls"><button id="repoRefresh" class="action">Refresh repository state</button></div>
@@ -283,6 +326,7 @@
 
   let bridgeAvailable = false;
   let activeLibraryTarget = null;
+  let latestFamilyStatus = null;
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }
   function formatDate(value) {
@@ -324,6 +368,48 @@
       }, '*');
     });
   }
+
+  function selectedFlavourId() {
+    return $('flavourSelect').value || manifest?.flavour?.id || '';
+  }
+
+  function renderFamilyStatus(payload) {
+    latestFamilyStatus = payload;
+    for (const layer of ['foundations','elements','components','layout','templates','pages']) {
+      const row = payload?.layers?.[layer] || {};
+      const master = document.querySelector(`[data-master-layer="${layer}"]`);
+      const flavour = document.querySelector(`[data-flavour-layer="${layer}"]`);
+      if (master) {
+        master.textContent = row.master ? `Master ✓ ${row.master.assets?.length || (Object.keys(row.master.bindings?.variables || {}).length + Object.keys(row.master.bindings?.styles || {}).length)} registered` : 'Master —';
+        master.classList.toggle('ready', Boolean(row.master));
+      }
+      if (flavour) {
+        flavour.textContent = row.flavour ? `Flavour ✓ ${row.flavour.assets?.length || (Object.keys(row.flavour.bindings?.variables || {}).length + Object.keys(row.flavour.bindings?.styles || {}).length)} registered` : 'Flavour —';
+        flavour.classList.toggle('ready', Boolean(row.flavour));
+      }
+    }
+    updateSystemControls();
+  }
+
+  function updateSystemControls() {
+    const layer = $('systemLayer').value;
+    const role = $('systemRole').value;
+    const flavour = selectedFlavourId();
+    const canSync = role === 'flavour' && layer !== 'foundations' && Boolean(flavour);
+    $('syncSystemLayer').disabled = !canSync;
+    $('registerSystemLayer').disabled = role === 'flavour' && !flavour;
+  }
+
+  async function refreshFamilyStatus() {
+    const flavour = selectedFlavourId();
+    try {
+      const payload = await bridgeRequest(`/library-family/status${flavour ? `?flavour=${encodeURIComponent(flavour)}` : ''}`);
+      renderFamilyStatus(payload);
+    } catch (error) {
+      $('systemStatusNote').textContent = `Family status unavailable: ${error.message || String(error)}`;
+    }
+  }
+
   function renderRepositoryStatus(payload) {
     bridgeAvailable = true;
     $('repoState').textContent = payload.syncing ? 'Syncing…' : (payload.core?.dirty ? 'Core has local changes' : 'Bridge connected');
@@ -352,6 +438,9 @@
     } else if (payload.manifest?.flavour) {
       $('flavourOverrides').textContent = `${payload.manifest.flavour.overrideCount || 0} overrides`;
     }
+
+    updateSystemControls();
+    refreshFamilyStatus();
 
     $('bridgeNote').textContent = payload.core?.dirty || payload.flavoursRepository?.dirty
       ? 'Repository has uncommitted changes. Commit or stash them before pulling.'
@@ -539,6 +628,35 @@
     $('flavourSync').disabled = !bridgeAvailable || !$('flavourSelect').value;
   });
 
+
+  $('systemLayer').addEventListener('change', updateSystemControls);
+  $('systemRole').addEventListener('change', updateSystemControls);
+  $('flavourSelect').addEventListener('change', () => {
+    updateSystemControls();
+    refreshFamilyStatus();
+  });
+
+  $('familyRefresh').addEventListener('click', refreshFamilyStatus);
+
+  $('registerSystemLayer').addEventListener('click', () => {
+    setError();
+    const layer = $('systemLayer').value;
+    const role = $('systemRole').value;
+    const flavourId = role === 'flavour' ? selectedFlavourId() : null;
+    $('systemStatusNote').textContent = `Registering ${role} ${layer}…`;
+    $('registerSystemLayer').disabled = true;
+    parent.postMessage({ pluginMessage: { type: 'register-system-layer', layer, role, flavourId } }, '*');
+  });
+
+  $('syncSystemLayer').addEventListener('click', () => {
+    setError();
+    const layer = $('systemLayer').value;
+    const flavourId = selectedFlavourId();
+    $('systemStatusNote').textContent = `Syncing ${flavourId}: ${layer} from the published BC master library…`;
+    $('syncSystemLayer').disabled = true;
+    parent.postMessage({ pluginMessage: { type: 'sync-system-layer', layer, flavourId } }, '*');
+  });
+
   $('repoRefresh').addEventListener('click', async () => {
     setError();
     $('repoRefresh').disabled = true;
@@ -621,6 +739,24 @@
       bridgeRequests.delete(message.requestId);
       if (message.ok) pending.resolve(message.payload);
       else pending.reject(new Error(message.error || 'Repository bridge request failed.'));
+      return;
+    }
+    if (message.type === 'system-layer-registered') {
+      const p = message.payload;
+      $('systemStatusNote').textContent = `Registered ${p.role} ${p.layer}${p.flavourId ? ` for ${p.flavourId}` : ''}. ${p.assets ?? 0} asset root(s).`;
+      $('registerSystemLayer').disabled = false;
+      refreshFamilyStatus();
+      return;
+    }
+    if (message.type === 'system-layer-synced') {
+      const p = message.payload;
+      $('systemStatusNote').textContent = `Synced ${p.synced} ${p.layer} asset root(s) for ${p.flavourId}. No BufferCore master component dependencies remain. Publish this Flavour library, then register this file before syncing downstream layers.`;
+      $('syncSystemLayer').disabled = false;
+      refreshFamilyStatus();
+      return;
+    }
+    if (message.type === 'family-status') {
+      renderFamilyStatus(message.payload);
       return;
     }
     if (message.type === 'master-assets-registered') {

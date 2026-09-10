@@ -826,6 +826,284 @@ async function stampAppliedState(desired) {
 }
 
 
+
+const FIGMA_SYSTEM_KEYS = Object.freeze({
+  layer: 'buffercore.systemLayer',
+  role: 'buffercore.systemRole',
+  flavourId: 'buffercore.systemFlavourId'
+});
+
+const FIGMA_SYSTEM_LAYERS = Object.freeze([
+  { id: 'foundations', name: 'Foundations', dependencies: [] },
+  { id: 'elements', name: 'Elements', dependencies: ['foundations'] },
+  { id: 'components', name: 'Components', dependencies: ['foundations', 'elements'] },
+  { id: 'layout', name: 'Layout', dependencies: ['foundations', 'elements', 'components'] },
+  { id: 'templates', name: 'Templates', dependencies: ['foundations', 'elements', 'components', 'layout'] },
+  { id: 'pages', name: 'Pages', dependencies: ['foundations', 'elements', 'components', 'layout', 'templates'] }
+]);
+
+function layerDefinition(layerId) {
+  return FIGMA_SYSTEM_LAYERS.find((item) => item.id === layerId) || null;
+}
+
+function currentSystemIdentity() {
+  return {
+    layer: figma.root.getPluginData(FIGMA_SYSTEM_KEYS.layer) || null,
+    role: figma.root.getPluginData(FIGMA_SYSTEM_KEYS.role) || null,
+    flavourId: figma.root.getPluginData(FIGMA_SYSTEM_KEYS.flavourId) || null
+  };
+}
+
+function setSystemIdentity({ layer, role, flavourId = null }) {
+  if (!layerDefinition(layer)) throw new Error(`Unknown BufferCore Figma layer: ${layer}`);
+  if (!['master', 'flavour'].includes(role)) throw new Error(`Unknown BufferCore Figma role: ${role}`);
+  if (role === 'flavour' && !flavourId) throw new Error('A Flavour must be selected for a Flavour library file.');
+  figma.root.setPluginData(FIGMA_SYSTEM_KEYS.layer, layer);
+  figma.root.setPluginData(FIGMA_SYSTEM_KEYS.role, role);
+  figma.root.setPluginData(FIGMA_SYSTEM_KEYS.flavourId, role === 'flavour' ? flavourId : '');
+  return currentSystemIdentity();
+}
+
+function inferSystemLayerFromName() {
+  const name = String(figma.root.name || '').toLowerCase();
+  if (name.includes('foundation')) return 'foundations';
+  if (name.includes('element')) return 'elements';
+  if (name.includes('component')) return 'components';
+  if (name.includes('layout')) return 'layout';
+  if (name.includes('template')) return 'templates';
+  if (name.includes('page')) return 'pages';
+  return null;
+}
+
+async function publishedFoundationBindings() {
+  const registry = readBindingRegistry();
+  const variables = {};
+  const styles = {};
+
+  for (const [canonicalId, figmaId] of Object.entries(registry.variables || {})) {
+    try {
+      const variable = await figma.variables.getVariableByIdAsync(figmaId);
+      if (variable?.key) variables[canonicalId] = { key: variable.key, name: variable.name };
+    } catch {}
+  }
+
+  for (const [canonicalId, figmaId] of Object.entries(registry.styles || {})) {
+    try {
+      const style = await figma.getStyleByIdAsync?.(figmaId);
+      if (style?.key) styles[canonicalId] = { key: style.key, name: style.name, type: style.type || null };
+    } catch {}
+  }
+
+  return { variables, styles };
+}
+
+async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
+  const identity = setSystemIdentity({ layer, role, flavourId });
+  const definition = layerDefinition(layer);
+
+  if (role === 'master' && layer === 'foundations') {
+    const bindings = await publishedFoundationBindings();
+    const payload = {
+      schemaVersion: 1,
+      role,
+      layer,
+      flavourId: null,
+      fileName: figma.root.name || 'BC: Foundations',
+      registeredAt: new Date().toISOString(),
+      dependencies: definition.dependencies,
+      bindings,
+      assets: []
+    };
+    await repositoryBridgeRequest('/library-family/register', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length };
+  }
+
+  if (role === 'flavour' && layer === 'foundations') {
+    const target = currentLibraryTarget();
+    if (!target || target !== `flavour:${flavourId}`) {
+      throw new Error(`Apply ${flavourId} Foundations to this file before registering it as ${flavourId}: Foundations.`);
+    }
+    const bindings = await publishedFoundationBindings();
+    const payload = {
+      schemaVersion: 1,
+      role,
+      layer,
+      flavourId,
+      fileName: figma.root.name || `${flavourId}: Foundations`,
+      registeredAt: new Date().toISOString(),
+      dependencies: definition.dependencies,
+      bindings,
+      assets: []
+    };
+    await repositoryBridgeRequest('/library-family/register', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length };
+  }
+
+  const roots = localComponentRoots();
+  const assets = [];
+  for (const node of roots) {
+    if (!node.key) continue;
+
+    const sourceCanonical = role === 'flavour'
+      ? node.getPluginData(COMPONENT_KEYS.masterComponentId)
+      : ensureCanonicalComponentId(node, node.type === 'COMPONENT_SET' ? `${layer}:component-set` : `${layer}:component`);
+
+    if (!sourceCanonical) continue;
+
+    if (node.type === 'COMPONENT_SET') {
+      assets.push({
+        canonicalId: sourceCanonical,
+        kind: 'COMPONENT_SET',
+        key: node.key,
+        name: node.name,
+        variants: node.children.filter((child) => child.type === 'COMPONENT').map((child) => ({
+          canonicalId: role === 'flavour'
+            ? child.getPluginData(COMPONENT_KEYS.masterComponentId)
+            : ensureCanonicalComponentId(child, `${sourceCanonical}/variant`),
+          key: child.key,
+          name: child.name
+        }))
+      });
+    } else {
+      assets.push({
+        canonicalId: sourceCanonical,
+        kind: 'COMPONENT',
+        key: node.key,
+        name: node.name,
+        variants: []
+      });
+    }
+  }
+
+  const payload = {
+    schemaVersion: 1,
+    role,
+    layer,
+    flavourId: role === 'flavour' ? flavourId : null,
+    fileName: figma.root.name || `${role === 'master' ? 'BC' : flavourId}: ${definition.name}`,
+    registeredAt: new Date().toISOString(),
+    dependencies: definition.dependencies,
+    bindings: { variables: {}, styles: {} },
+    assets
+  };
+
+  await repositoryBridgeRequest('/library-family/register', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+
+  return {
+    ...identity,
+    assets: assets.length,
+    variants: assets.reduce((sum, item) => sum + (item.variants?.length || 0), 0)
+  };
+}
+
+async function familyState(flavourId = null) {
+  const suffix = flavourId ? `?flavour=${encodeURIComponent(flavourId)}` : '';
+  return repositoryBridgeRequest(`/library-family/status${suffix}`);
+}
+
+async function assertLayerDependencies(layer, flavourId) {
+  const state = await familyState(flavourId);
+  const definition = layerDefinition(layer);
+  const missing = (definition?.dependencies || []).filter((dependency) => {
+    const row = state.layers?.[dependency];
+    return !row?.master || !row?.flavour;
+  });
+  if (missing.length) {
+    throw new Error(`Cannot sync ${layer}: missing registered master/Flavour dependencies: ${missing.join(', ')}.`);
+  }
+  return state;
+}
+
+async function importFlavourVariableForCanonical(canonicalId, flavourFamily) {
+  const item = flavourFamily?.layers?.foundations?.flavour?.bindings?.variables?.[canonicalId];
+  if (!item?.key || typeof figma.variables.importVariableByKeyAsync !== 'function') return null;
+  try { return await figma.variables.importVariableByKeyAsync(item.key); } catch { return null; }
+}
+
+async function importFlavourStyleForCanonical(canonicalId, flavourFamily) {
+  const item = flavourFamily?.layers?.foundations?.flavour?.bindings?.styles?.[canonicalId];
+  if (!item?.key || typeof figma.importStyleByKeyAsync !== 'function') return null;
+  try { return await figma.importStyleByKeyAsync(item.key); } catch { return null; }
+}
+
+function masterAssetCanonicalByKey(family, key) {
+  if (!key) return null;
+  for (const row of Object.values(family?.layers || {})) {
+    for (const asset of row?.master?.assets || []) {
+      if (asset.key === key) return asset.canonicalId;
+      for (const variant of asset.variants || []) {
+        if (variant.key === key) return variant.canonicalId;
+      }
+    }
+  }
+  return null;
+}
+
+function flavourAssetKeyByCanonical(family, canonicalId) {
+  if (!canonicalId) return null;
+  for (const row of Object.values(family?.layers || {})) {
+    for (const asset of row?.flavour?.assets || []) {
+      if (asset.canonicalId === canonicalId) return asset.key;
+      for (const variant of asset.variants || []) {
+        if (variant.canonicalId === canonicalId) return variant.key;
+      }
+    }
+  }
+  return null;
+}
+
+async function remapNestedMasterInstances(node, family) {
+  if (node.type === 'INSTANCE') {
+    let master = null;
+    try { master = await node.getMainComponentAsync?.(); } catch {}
+    const sourceKey = master?.key || null;
+    const canonicalId = masterAssetCanonicalByKey(family, sourceKey);
+    const flavourKey = flavourAssetKeyByCanonical(family, canonicalId);
+    if (flavourKey && flavourKey !== sourceKey) {
+      try {
+        const target = await figma.importComponentByKeyAsync(flavourKey);
+        await node.swapComponent(target);
+      } catch {}
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) await remapNestedMasterInstances(child, family);
+  }
+}
+
+async function assertNoResidualMasterDependencies(node, family) {
+  const masterKeys = new Set();
+  for (const row of Object.values(family?.layers || {})) {
+    for (const asset of row?.master?.assets || []) {
+      if (asset.key) masterKeys.add(asset.key);
+      for (const variant of asset.variants || []) if (variant.key) masterKeys.add(variant.key);
+    }
+  }
+
+  const residual = [];
+  const visit = async (current) => {
+    if (current.type === 'INSTANCE') {
+      try {
+        const master = await current.getMainComponentAsync?.();
+        if (master?.key && masterKeys.has(master.key)) residual.push({ name: current.name, key: master.key });
+      } catch {}
+    }
+    if ('children' in current) for (const child of current.children) await visit(child);
+  };
+  await visit(node);
+  return residual;
+}
+
 const COMPONENT_KEYS = Object.freeze({
   componentId: 'buffercore.componentId',
   masterComponentId: 'buffercore.masterComponentId',
@@ -1208,6 +1486,110 @@ async function syncMasterFigmaAssets() {
   };
 }
 
+
+async function syncSystemLayer(layer, flavourId) {
+  const definition = layerDefinition(layer);
+  if (!definition) throw new Error(`Unknown BufferCore Figma layer: ${layer}`);
+  if (!flavourId) throw new Error('Choose a Flavour before syncing a Flavour library layer.');
+
+  setSystemIdentity({ layer, role: 'flavour', flavourId });
+
+  if (layer === 'foundations') {
+    throw new Error('Foundations are synced with Pull + resolve, Inspect and Apply. Register the published Flavour Foundations after applying them.');
+  }
+
+  const family = await assertLayerDependencies(layer, flavourId);
+  const master = family.layers?.[layer]?.master;
+  if (!master?.assets?.length) {
+    throw new Error(`BC: ${definition.name} has not been registered, or contains no published Components/Component Sets.`);
+  }
+
+  // Current Flavour file may not contain local Foundation variables/styles; import
+  // the published Flavour Foundation bindings by key when rebinding master assets.
+  const targetRegistry = { variables: {}, styles: {} };
+  const foundationFlavour = family.layers?.foundations?.flavour;
+
+  for (const canonicalId of Object.keys(foundationFlavour?.bindings?.variables || {})) {
+    const variable = await importFlavourVariableForCanonical(canonicalId, family);
+    if (variable) targetRegistry.variables[canonicalId] = variable.id;
+  }
+  for (const canonicalId of Object.keys(foundationFlavour?.bindings?.styles || {})) {
+    const style = await importFlavourStyleForCanonical(canonicalId, family);
+    if (style) targetRegistry.styles[canonicalId] = style.id;
+  }
+
+  const registryMeta = {
+    source: 'published-figma-master-library-family',
+    sourceFile: master.fileName,
+    sourceLibraryTarget: `master:${layer}`,
+    registeredAt: master.registeredAt,
+    bindingRegistry: family.layers?.foundations?.master?.bindings
+      ? {
+          variables: Object.fromEntries(Object.entries(family.layers.foundations.master.bindings.variables || {}).map(([id, value]) => [id, value.id || value.figmaId || ''])),
+          styles: Object.fromEntries(Object.entries(family.layers.foundations.master.bindings.styles || {}).map(([id, value]) => [id, value.id || value.figmaId || '']))
+        }
+      : { variables: {}, styles: {} },
+    variableNames: Object.fromEntries(Object.entries(family.layers?.foundations?.master?.bindings?.variables || {}).map(([id, value]) => [value.name, id])),
+    styleNames: Object.fromEntries(Object.entries(family.layers?.foundations?.master?.bindings?.styles || {}).map(([id, value]) => [value.name, id])),
+    assets: master.assets
+  };
+
+  // Map source alias IDs by importing published master Foundation variables by key.
+  for (const [canonicalId, value] of Object.entries(family.layers?.foundations?.master?.bindings?.variables || {})) {
+    if (!value?.key || typeof figma.variables.importVariableByKeyAsync !== 'function') continue;
+    try {
+      const imported = await figma.variables.importVariableByKeyAsync(value.key);
+      registryMeta.bindingRegistry.variables[canonicalId] = imported.id;
+      if (imported.name) registryMeta.variableNames[imported.name] = canonicalId;
+    } catch {}
+  }
+  for (const [canonicalId, value] of Object.entries(family.layers?.foundations?.master?.bindings?.styles || {})) {
+    if (!value?.key || typeof figma.importStyleByKeyAsync !== 'function') continue;
+    try {
+      const imported = await figma.importStyleByKeyAsync(value.key);
+      registryMeta.bindingRegistry.styles[canonicalId] = imported.id;
+      if (imported.name) registryMeta.styleNames[imported.name] = canonicalId;
+    } catch {}
+  }
+
+  const existing = localComponentRoots();
+  const existingByCanonical = new Map(
+    existing
+      .map((node) => [node.getPluginData(COMPONENT_KEYS.masterComponentId), node])
+      .filter(([id]) => id)
+  );
+
+  let synced = 0;
+  const residual = [];
+  for (const entry of master.assets) {
+    let projected = null;
+    if (entry.kind === 'COMPONENT_SET') {
+      projected = await projectComponentSet(entry, registryMeta, targetRegistry, existingByCanonical);
+    } else {
+      projected = await projectSingleComponent(entry, registryMeta, targetRegistry, existingByCanonical);
+    }
+    if (!projected) continue;
+
+    await remapNestedMasterInstances(projected, family);
+    const left = await assertNoResidualMasterDependencies(projected, family);
+    residual.push(...left);
+    synced += 1;
+  }
+
+  if (residual.length) {
+    throw new Error(`Sync stopped: ${residual.length} nested BufferCore master instance(s) could not be translated to ${flavourId} equivalents. Publish/register the required upstream Flavour layer first.`);
+  }
+
+  return {
+    layer,
+    flavourId,
+    synced,
+    masterRegisteredAt: master.registeredAt,
+    dependencies: definition.dependencies,
+    residualMasterDependencies: 0
+  };
+}
+
 function currentLibraryTarget() {
   return figma.root.getPluginData(BUFFERCORE_KEYS.libraryTarget) || null;
 }
@@ -1322,6 +1704,18 @@ figma.ui.onmessage = async (message) => {
       } catch (error) {
         figma.ui.postMessage({ type: 'bridge-response', requestId, ok: false, error: serialiseError(error) });
       }
+      return;
+    }
+    if (message?.type === 'register-system-layer') {
+      figma.ui.postMessage({ type: 'system-layer-registered', payload: await registerCurrentSystemLayer(message) });
+      return;
+    }
+    if (message?.type === 'family-status') {
+      figma.ui.postMessage({ type: 'family-status', payload: await familyState(message.flavourId || null) });
+      return;
+    }
+    if (message?.type === 'sync-system-layer') {
+      figma.ui.postMessage({ type: 'system-layer-synced', payload: await syncSystemLayer(message.layer, message.flavourId) });
       return;
     }
     if (message?.type === 'register-master-assets') {

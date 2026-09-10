@@ -15,6 +15,7 @@ const corePath = path.resolve(systemRoot, 'BufferCore');
 const flavoursPath = path.resolve(systemRoot, 'BufferCore-Flavours');
 const manifestPath = path.resolve(root, 'generated', 'figma', 'buffercore.figma.json');
 const masterAssetsPath = path.resolve(root, 'generated', 'figma', 'buffercore.master-figma-assets.json');
+const libraryFamilyPath = path.resolve(root, 'generated', 'figma', 'buffercore.library-family.json');
 const port = Number(process.env.BUFFERCORE_FIGMA_BRIDGE_PORT || 3847);
 let syncing = false;
 
@@ -73,6 +74,84 @@ function listFlavours() {
   return found.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
+
+const LIBRARY_FAMILY_LAYERS = ['foundations', 'elements', 'components', 'layout', 'templates', 'pages'];
+
+function emptyLibraryFamily() {
+  return {
+    schemaVersion: 1,
+    updatedAt: null,
+    masters: {},
+    flavours: {}
+  };
+}
+
+function readLibraryFamily() {
+  const current = readJson(libraryFamilyPath);
+  if (!current) return emptyLibraryFamily();
+  return {
+    schemaVersion: 1,
+    updatedAt: current.updatedAt || null,
+    masters: current.masters || {},
+    flavours: current.flavours || {}
+  };
+}
+
+function writeLibraryFamily(family) {
+  fs.mkdirSync(path.dirname(libraryFamilyPath), { recursive: true });
+  family.updatedAt = new Date().toISOString();
+  fs.writeFileSync(libraryFamilyPath, JSON.stringify(family, null, 2) + '\n', 'utf8');
+}
+
+function registerLibraryLayer(payload) {
+  const layer = payload?.layer;
+  const role = payload?.role;
+  if (!LIBRARY_FAMILY_LAYERS.includes(layer)) throw new Error(`Unknown library family layer: ${layer}`);
+  if (!['master', 'flavour'].includes(role)) throw new Error(`Unknown library family role: ${role}`);
+  if (role === 'flavour' && !payload?.flavourId) throw new Error('flavourId is required for a Flavour layer registration.');
+
+  const family = readLibraryFamily();
+  const clean = {
+    schemaVersion: payload.schemaVersion || 1,
+    role,
+    layer,
+    flavourId: role === 'flavour' ? payload.flavourId : null,
+    fileName: payload.fileName || null,
+    registeredAt: payload.registeredAt || new Date().toISOString(),
+    dependencies: Array.isArray(payload.dependencies) ? payload.dependencies : [],
+    bindings: payload.bindings || { variables: {}, styles: {} },
+    assets: Array.isArray(payload.assets) ? payload.assets : []
+  };
+
+  if (role === 'master') {
+    family.masters[layer] = clean;
+  } else {
+    family.flavours[payload.flavourId] ||= {};
+    family.flavours[payload.flavourId][layer] = clean;
+  }
+  writeLibraryFamily(family);
+  return clean;
+}
+
+function libraryFamilyStatus(flavourId = null) {
+  const family = readLibraryFamily();
+  const flavour = flavourId ? (family.flavours[flavourId] || {}) : {};
+  const layers = {};
+  for (const layer of LIBRARY_FAMILY_LAYERS) {
+    layers[layer] = {
+      master: family.masters[layer] || null,
+      flavour: flavour[layer] || null
+    };
+  }
+  return {
+    ok: true,
+    schemaVersion: family.schemaVersion,
+    updatedAt: family.updatedAt,
+    flavourId,
+    layers
+  };
+}
+
 function currentStatus() {
   const manifest = readJson(manifestPath);
   return {
@@ -81,6 +160,11 @@ function currentStatus() {
     core: safeRepoState(corePath),
     flavoursRepository: fs.existsSync(flavoursPath) ? safeRepoState(flavoursPath) : null,
     flavours: listFlavours(),
+    libraryFamily: {
+      updatedAt: readLibraryFamily().updatedAt,
+      registeredMasterLayers: Object.keys(readLibraryFamily().masters || {}).length,
+      registeredFlavours: Object.keys(readLibraryFamily().flavours || {}).length
+    },
     manifest: manifest ? {
       schemaVersion: manifest.schemaVersion,
       generatedAt: manifest.generatedAt,
@@ -124,6 +208,23 @@ const server = http.createServer(async (req, res) => {
     const manifest = readJson(manifestPath);
     if (!manifest) return json(res, 404, { ok: false, error: 'No generated Figma manifest exists yet.' });
     return json(res, 200, { ok: true, manifest });
+  }
+  if (req.method === 'GET' && req.url?.startsWith('/library-family/status')) {
+    const requestUrl = new URL(req.url, `http://localhost:${port}`);
+    return json(res, 200, libraryFamilyStatus(requestUrl.searchParams.get('flavour') || null));
+  }
+  if (req.method === 'POST' && req.url === '/library-family/register') {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let payload = null;
+    try { payload = JSON.parse(raw || '{}'); } catch { return json(res, 400, { ok: false, error: 'Invalid library family registration JSON.' }); }
+    try {
+      const registered = registerLibraryLayer(payload);
+      return json(res, 200, { ok: true, registered, status: libraryFamilyStatus(payload.flavourId || null) });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: error?.message || String(error) });
+    }
   }
   if (req.method === 'GET' && req.url === '/master-assets') {
     const registry = readJson(masterAssetsPath);
