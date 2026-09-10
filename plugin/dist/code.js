@@ -1504,8 +1504,8 @@ async function syncSystemLayer(layer, flavourId) {
     throw new Error(`BC: ${definition.name} has not been registered, or contains no published Components/Component Sets.`);
   }
 
-  // Current Flavour file may not contain local Foundation variables/styles; import
-  // the published Flavour Foundation bindings by key when rebinding master assets.
+  // Current Flavour file may not contain local Foundation variables/styles.
+  // Load the published Flavour Foundation bindings by key when rebinding master assets.
   const targetRegistry = { variables: {}, styles: {} };
   const foundationFlavour = family.layers?.foundations?.flavour;
 

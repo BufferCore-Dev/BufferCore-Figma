@@ -460,3 +460,14 @@ test('family UI exposes all six master and Flavour layers instead of one monolit
   assert.match(html, /Sync this Flavour layer/);
   assert.match(html, /BufferCore system layers/);
 });
+
+
+test('built Figma background code cannot trip the sandbox import-expression false-positive guard', async () => {
+  const fs = await import('node:fs/promises');
+  const source = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const build = await fs.readFile(new URL('../tools/build-plugin.mjs', import.meta.url), 'utf8');
+  const guard = /(^|[^.])\bimport\s*(?:\(|\/[/*]|<!--|-->)/m;
+  assert.equal(guard.test(source), false);
+  assert.match(build, /figmaImportGuard/);
+  assert.match(build, /Figma sandbox import-expression guard would reject/);
+});
