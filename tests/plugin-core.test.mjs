@@ -471,3 +471,12 @@ test('built Figma background code cannot trip the sandbox import-expression fals
   assert.match(build, /figmaImportGuard/);
   assert.match(build, /Figma sandbox import-expression guard would reject/);
 });
+
+
+test('dynamic-page document access loads all pages before scanning Components across the document', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /async function localComponentRoots/);
+  assert.match(code, /await figma\.loadAllPagesAsync\(\)/);
+  assert.match(code, /await localComponentRoots\(\)/);
+});

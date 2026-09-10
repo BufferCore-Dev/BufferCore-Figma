@@ -945,7 +945,7 @@ async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
     return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length };
   }
 
-  const roots = localComponentRoots();
+  const roots = await localComponentRoots();
   const assets = [];
   for (const node of roots) {
     if (!node.key) continue;
@@ -1127,10 +1127,15 @@ function ensureCanonicalComponentId(node, prefix = 'component') {
   return id;
 }
 
-function localComponentRoots() {
+async function localComponentRoots() {
+  if (typeof figma.loadAllPagesAsync === 'function') {
+    await figma.loadAllPagesAsync();
+  }
+
   const nodes = figma.root.findAllWithCriteria
     ? figma.root.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET'] })
     : figma.root.findAll((node) => node.type === 'COMPONENT' || node.type === 'COMPONENT_SET');
+
   return nodes.filter((node) => {
     if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') return false;
     return !node.remote;
@@ -1158,7 +1163,7 @@ async function registerMasterFigmaAssets() {
     throw new Error(`Master components can only be captured from the Baseline library. This file is ${target}.`);
   }
 
-  const roots = localComponentRoots();
+  const roots = await localComponentRoots();
   const components = [];
   for (const node of roots) {
     if (!node.key) continue;
@@ -1461,7 +1466,7 @@ async function syncMasterFigmaAssets() {
   }
 
   const targetRegistry = readBindingRegistry();
-  const existing = localComponentRoots();
+  const existing = await localComponentRoots();
   const existingByCanonical = new Map(
     existing
       .map((node) => [node.getPluginData(COMPONENT_KEYS.masterComponentId), node])
@@ -1552,7 +1557,7 @@ async function syncSystemLayer(layer, flavourId) {
     } catch {}
   }
 
-  const existing = localComponentRoots();
+  const existing = await localComponentRoots();
   const existingByCanonical = new Map(
     existing
       .map((node) => [node.getPluginData(COMPONENT_KEYS.masterComponentId), node])
