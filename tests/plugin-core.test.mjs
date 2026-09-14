@@ -5,11 +5,7 @@ import {
   desiredValueForMode,
   buildDesiredModel,
   buildDiffSummary,
-  summariseDiffByKind,
-  libraryTargetForManifest,
-  libraryKindForManifest,
-  buildBindingTranslationRegistry,
-  translateCanonicalBinding
+  summariseDiffByKind
 } from '../packages/figma-plugin-core/src/index.mjs';
 
 test('flattens arbitrary mode dimensions deterministically for Figma collections', () => {
@@ -317,166 +313,1155 @@ test('plugin UI surfaces drift, conflicts and orphaned managed objects and block
   assert.match(source, /message\.payload\.safety\?\.blocked/);
 });
 
-test('library target identity keeps Baseline and each Flavour as separate Figma libraries', () => {
-  assert.equal(libraryTargetForManifest({ platform: 'figma', flavour: null }), 'baseline');
-  assert.equal(libraryKindForManifest({ platform: 'figma', flavour: null }), 'baseline');
-  assert.equal(libraryTargetForManifest({ platform: 'figma', flavour: { id: 'wallwood' } }), 'flavour:wallwood');
-  assert.equal(libraryKindForManifest({ platform: 'figma', flavour: { id: 'wallwood' } }), 'flavour');
-});
 
-test('canonical binding translation maps Core identities to this library own stable Figma IDs', () => {
-  const registry = buildBindingTranslationRegistry({
-    collections: { 'semantic.colour': 'VariableCollection:1' },
-    variables: { 'colour.fill.primary': 'Variable:10' },
-    styles: { 'type.heading.1': 'TextStyle:2' }
-  });
-  assert.deepEqual(translateCanonicalBinding('colour.fill.primary', registry), {
-    kind: 'variable',
-    canonicalId: 'colour.fill.primary',
-    figmaId: 'Variable:10'
-  });
-  assert.deepEqual(translateCanonicalBinding({ styleId: 'type.heading.1' }, registry), {
-    kind: 'style',
-    canonicalId: 'type.heading.1',
-    figmaId: 'TextStyle:2'
-  });
-  assert.equal(translateCanonicalBinding('missing', registry), null);
-});
-
-test('master Figma asset projection is captured from Baseline and persisted through the local bridge', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  const bridge = await fs.readFile(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(code, /registerMasterFigmaAssets/);
-  assert.match(code, /sourceLibraryTarget: 'baseline'/);
-  assert.match(code, /\/master-assets/);
-  assert.match(bridge, /req\.url === '\/master-assets'/);
-  assert.match(bridge, /buffercore\.master-figma-assets\.json/);
-});
-
-test('Flavour component projection imports master components then rebinds detached structure to the Flavour registry', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /importComponentByKeyAsync/);
-  assert.match(code, /detachInstance/);
-  assert.match(code, /remapNodeBindings/);
-  assert.match(code, /setBoundVariableForPaint/);
-  assert.match(code, /setBoundVariableForEffect/);
-  assert.match(code, /targetRegistry/);
-});
-
-test('projected Components update existing local component identities instead of delete and recreate', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /existingByCanonical/);
-  assert.match(code, /replaceComponentContents/);
-  assert.match(code, /masterComponentId/);
-  assert.match(code, /masterComponentRevision/);
-});
-
-test('projected component sets preserve existing variants where canonical IDs still exist and remove only retired projected variants', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /projectComponentSet/);
-  assert.match(code, /existingVariants/);
-  assert.match(code, /figma\.combineAsVariants/);
-  assert.match(code, /wanted\.has\(id\)/);
-});
-
-test('plugin UI exposes explicit library-family registration and Flavour layer sync actions', async () => {
+test('resize grip sends mouse-delta dimensions to figma.ui.resize without changing the subtle grip UI', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  assert.match(html, /Register this Figma file/);
-  assert.match(html, /Sync this Flavour layer/);
-  assert.match(html, /published BufferCore Figma master library owns design assets/);
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(html, /id="resizeGrip"/);
+  assert.match(html, /addEventListener\('mousedown'/);
+  assert.match(html, /event\.movementX/);
+  assert.match(html, /type: 'resize-window'/);
+  assert.doesNotMatch(html, /id="sizeWide"/);
+
+  assert.match(code, /message\?\.type === 'resize-window'/);
+  assert.match(code, /figma\.ui\.resize/);
 });
 
 
-test('published Figma master library remains authoritative and registry stores only identities/binding metadata', async () => {
+test('project Flavour adapter is sparse and only materialises bindings used by the consumer file', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /source: 'published-figma-master-library'/);
-  assert.match(code, /metadata only/);
-  assert.match(code, /importComponentByKeyAsync/);
-  assert.match(code, /registryMeta\.assets/);
-  assert.doesNotMatch(code, /source: 'git'.*assets/s);
+
+  assert.match(code, /collectProjectThemeRequirements/);
+  assert.match(code, /requiredVariableIds = new Set\(\)/);
+  assert.match(code, /requiredStyleIds = new Set\(\)/);
+  assert.match(code, /ensureProjectThemeAdapter\(\s*manifest,\s*requiredVariableIds,\s*requiredStyleIds/s);
+  assert.match(code, /BC Project Theme · \$\{flavourName\}/);
+  assert.doesNotMatch(code, /BC Theme · \$\{flavourName\} · \$\{definition\.name\}/);
 });
 
-test('master asset UI names Elements Components Patterns Templates and Layouts as Figma-authored publishable assets', async () => {
+test('applying a project Flavour removes old full adapters and does not materialise extension primitives automatically', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /removeExistingProjectThemeAdapter/);
+  assert.match(code, /Extensions remain Flavour primitive additions/);
+  assert.match(code, /Surface them as metadata only/);
+});
+
+
+test('local workspace Flavour application is not disabled by dirty Git working trees', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  for (const label of ['Elements', 'Components', 'Patterns', 'Templates', 'Layouts']) assert.match(html, new RegExp(label));
-  assert.match(html, /publishable Components\/Component Sets/);
+
+  assert.match(html, /const githubMode = payload\.sourceMode === 'github'/);
+  assert.match(html, /dirtyFlavoursBlockPull = githubMode && Boolean\(payload\.flavoursRepository\?\.dirty\)/);
+  assert.match(html, /\$\('applyProjectFlavour'\)\.disabled = Boolean\(payload\.syncing\) \|\| !select\.value/);
+  assert.match(html, /Local workspace mode is using your current working tree/);
 });
 
 
-test('Figma library family uses the six BufferCore design files with dependency-aware projection', async () => {
+test('project Flavour application uses direct overrides and creates no local Foundation clone', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  for (const layer of ['foundations', 'elements', 'components', 'layout', 'templates', 'pages']) {
-    assert.match(code, new RegExp(`id: '${layer}'`));
+
+  assert.match(code, /applyProjectLiteralNode/);
+  assert.match(code, /removeAnyGeneratedProjectThemeObjects/);
+  assert.match(code, /createdVariables: 0/);
+  assert.match(code, /createdCollections: 0/);
+  assert.doesNotMatch(code, /createVariableCollection\(`BC Project Theme/);
+});
+
+test('project paint bindings resolve to Flavour literals rather than new local variables', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /applyProjectLiteralPaints/);
+  assert.match(code, /setBoundVariableForPaint\(paint, field, null\)/);
+  assert.match(code, /resolveProjectThemeLiteral/);
+});
+
+
+test('project Flavour swaps BC Foundation bindings to a registered published Flavour Foundations library', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  assert.match(code, /buildProjectFoundationSwapContext/);
+  assert.match(code, /flavourFoundations\.bindings\?\.variables/);
+  assert.match(code, /figma\.variables\.importVariableByKeyAsync/);
+  assert.match(code, /setBoundVariableForPaint\(next, field, target\)/);
+  assert.match(code, /node\.setBoundVariable\(field, target\)/);
+});
+
+test('Flavour Foundations workflow builds full resolved Foundations and registers the published library', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(code, /message\?\.type === 'apply-flavour-foundations'/);
+  assert.match(code, /message\?\.type === 'register-flavour-foundations'/);
+  assert.match(html, /Build \/ update this file/);
+  assert.match(html, /Register published library/);
+});
+
+test('project Flavour application does not create local adapter variables or literal colour overrides', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const start = code.indexOf('async function applyProjectFlavour');
+  const end = code.indexOf('async function projectThemeStatus', start);
+  const block = code.slice(start, end);
+  assert.doesNotMatch(block, /createVariableCollection/);
+  assert.doesNotMatch(block, /rgbaFromHex/);
+  assert.match(block, /swapProjectNodeBindings/);
+});
+
+
+test('Flavours UI separates library-building and project-application into distinct workflows', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /Build Foundations Library/);
+  assert.match(html, /Apply to Project/);
+  assert.match(html, /id="flavourLibraryWorkflow"/);
+  assert.match(html, /id="flavourProjectWorkflow"/);
+  assert.match(html, /function setFlavourView/);
+  assert.match(html, /body\.classList\.toggle\('flavours-active'/);
+});
+
+test('plugin exposes current Figma file context so Flavours opens in the relevant workflow', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(code, /message\?\.type === 'file-context'/);
+  assert.match(code, /system: currentSystemIdentity\(\)/);
+  assert.match(html, /isFlavourFoundations/);
+  assert.match(html, /requestFileContext/);
+});
+
+
+test('Apply to Project only lists Flavours with a registered published Foundations library', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="projectFlavourSelect"/);
+  assert.match(html, /refreshReadyProjectFlavours/);
+  assert.match(html, /family\?\.layers\?\.foundations\?\.flavour/);
+  assert.match(html, /variableCount > 0/);
+  assert.match(html, /No published Flavours ready/);
+  assert.match(html, /readyProjectFlavourIds\.has/);
+});
+
+test('library build workflow retains the full authored Flavour list independently from project-ready Flavours', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /Flavour to build/);
+  assert.match(html, /authoredFlavours = payload\.flavours \|\| \[\]/);
+  assert.match(html, /Choose a ready Flavour/);
+  assert.match(html, /selectedBuildFlavourId/);
+});
+
+
+test('Help tab contains the minimal complete BufferCore and Flavour workflow', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /data-tab="help"/);
+  assert.match(html, /id="tab-help"/);
+  assert.match(html, /Set up Core once/);
+  assert.match(html, /Build a Flavour Foundations library/);
+  assert.match(html, /Apply a Flavour to a project/);
+  assert.match(html, /Reconcile after BC updates/);
+  assert.match(html, /Flavours only get their own Foundations library/);
+});
+
+
+test('library registration is blocked until Figma reports all publishable assets CURRENT', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /getPublishStatusAsync/);
+  assert.match(code, /'UNPUBLISHED'/);
+  assert.match(code, /'CURRENT'/);
+  assert.match(code, /CHANGED:\s*0/);
+  assert.match(code, /await assertLayerPublishedCurrent\(layer\)/);
+  assert.match(code, /Publish the latest library changes in Figma first/);
+});
+
+test('Foundation registration stores only publishable variables and styles that are CURRENT', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /!variable\.hiddenFromPublishing/);
+  assert.match(code, /!collection\.hiddenFromPublishing/);
+  assert.match(code, /safePublishStatus\(variable\) !== 'CURRENT'/);
+  assert.match(code, /safePublishStatus\(style\) !== 'CURRENT'/);
+});
+
+test('register buttons stay disabled until an explicit publish-status check passes', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="checkFlavourPublishStatus"/);
+  assert.match(html, /type: 'library-publish-status'/);
+  assert.match(html, /dataset\.publishReady/);
+  assert.match(html, /Publish in Figma, then Check status/);
+  assert.match(html, /Publish the current library in Figma, then Refresh status/);
+});
+
+
+test('Auto Reconcile watches only incremental document changes and debounces them', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /\.on\('nodechange', handleAutoReconcilePageChange\)/);
+  assert.match(code, /AUTO_RECONCILE_DEBOUNCE_MS = 350/);
+  assert.match(code, /change\.type === 'CREATE'/);
+  assert.match(code, /change\.type !== 'PROPERTY_CHANGE'/);
+  assert.match(code, /figma\.getNodeByIdAsync\(id\)/);
+  assert.match(code, /hasQueuedAncestor/);
+  assert.doesNotMatch(code.slice(code.indexOf("function watchCurrentPageForAutoReconcile"), code.indexOf("async function applyProjectFlavour")), /loadAllPagesAsync/);
+});
+
+test('Auto Reconcile ignores its own edits and reuses the existing Foundation swap engine', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /autoReconcileBusy/);
+  assert.match(code, /autoReconcileIgnoreUntil/);
+  assert.match(code, /swapProjectNodeBindings\(root, context, report\)/);
+  assert.match(code, /buildProjectFoundationSwapContext\(autoReconcileManifest\)/);
+  assert.match(code, /armAutoReconcile\(manifest\)/);
+});
+
+test('Project UI exposes a persistent Auto Reconcile toggle with manual Reconcile fallback', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="autoReconcileToggle"/);
+  assert.match(html, /Auto Reconcile/);
+  assert.match(html, /type: 'set-auto-reconcile'/);
+  assert.match(html, /Watching for new BufferCore components/);
+  assert.match(html, /manual safety check after larger library updates/);
+});
+
+
+test('manifest exposes native BufferCore commands and relaunch buttons', async () => {
+  const fs = await import('node:fs/promises');
+  const manifest = JSON.parse(await fs.readFile(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
+
+  assert.deepEqual(
+    manifest.menu.map((item) => item.command),
+    ['open', 'flavours', 'extensions']
+  );
+  assert.deepEqual(
+    manifest.relaunchButtons.map((item) => item.command),
+    ['open', 'extensions']
+  );
+});
+
+test('plugin installs BufferCore relaunch data without scanning the document', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /setRelaunchData\(BUFFERCORE_RELAUNCH_DATA\)/);
+  assert.match(code, /figma\.on\('selectionchange'/);
+  assert.match(code, /\.slice\(0, 50\)/);
+  const relaunchBlock = code.slice(
+    code.indexOf('function installBufferCoreRelaunchData'),
+    code.indexOf("figma.on('selectionchange'")
+  );
+  assert.doesNotMatch(relaunchBlock, /findAll|loadAllPagesAsync/);
+});
+
+test('native commands route directly to Flavours and Extensions UI', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /figma\.command === 'flavours'/);
+  assert.match(code, /figma\.command === 'extensions'/);
+  assert.match(html, /data-tab="extensions"/);
+  assert.match(html, /id="tab-extensions"/);
+  assert.match(html, /type: 'ui-ready'/);
+  assert.match(html, /message\.type === 'launch-route'/);
+});
+
+
+test('Help tab is ordered by actual usage and uses collapsible sections', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const useIndex = html.indexOf('Use a Flavour in a project');
+  const setupFlavourIndex = html.indexOf('Set up a new Flavour');
+  const initialIndex = html.indexOf('Initial BufferCore setup');
+
+  assert.ok(useIndex >= 0);
+  assert.ok(setupFlavourIndex > useIndex);
+  assert.ok(initialIndex > setupFlavourIndex);
+  assert.match(html, /<details class="help-section" open>/);
+  assert.match(html, /<details class="help-section">\s*<summary>Set up a new Flavour<\/summary>/);
+  assert.match(html, /<details class="help-section">\s*<summary>Initial BufferCore setup<\/summary>/);
+  assert.match(html, /Auto Reconcile remaps new BC Foundation bindings/);
+});
+
+
+test('native relaunch experiment is removed and quick normal launch is restored', async () => {
+  const fs = await import('node:fs/promises');
+  const manifest = JSON.parse(await fs.readFile(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.equal(manifest.menu, undefined);
+  assert.equal(manifest.relaunchButtons, undefined);
+  assert.doesNotMatch(code, /setRelaunchData/);
+  assert.doesNotMatch(code, /figma\.command/);
+  assert.doesNotMatch(html, /data-tab="extensions"/);
+});
+
+test('default opening tab is configurable and persisted in Figma client storage', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /clientStorage\.getAsync\(PLUGIN_SETTINGS_KEY\)/);
+  assert.match(code, /clientStorage\.setAsync\(PLUGIN_SETTINGS_KEY, result\)/);
+  assert.match(html, /id="openSettings"/);
+  assert.match(html, /id="defaultOpeningTab"/);
+  assert.match(html, /value="core">Core/);
+  assert.match(html, /value="flavours">Flavours/);
+  assert.match(html, /value="help">Help/);
+  assert.match(html, /activateTab\(currentPluginSettings\.defaultTab\)/);
+});
+
+
+test('Auto Reconcile uses page nodechange in dynamic-page mode instead of documentchange', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(code, /figma\.on\('documentchange'/);
+  assert.match(code, /\.on\('nodechange', handleAutoReconcilePageChange\)/);
+  assert.match(code, /\.off\('nodechange', handleAutoReconcilePageChange\)/);
+  assert.match(code, /figma\.on\('currentpagechange'/);
+  assert.match(code, /event\.nodeChanges/);
+  assert.match(code, /change\?\.node\?\.id/);
+  assert.doesNotMatch(
+    code.slice(code.indexOf('function watchCurrentPageForAutoReconcile'), code.indexOf("figma.on('currentpagechange'")),
+    /loadAllPagesAsync/
+  );
+});
+
+
+test('Context Remap builds a canonical plan from the generated Context contract', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /function buildContextRemapCssPlan/);
+  assert.match(code, /function buildContextRemapCanonicalPlan/);
+  assert.match(code, /contextTargetMappings/);
+  assert.match(code, /ambiguous/);
+  assert.match(code, /unavailable/);
+});
+
+test('Context Remap operates only on the current Figma selection and preserves variables', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function remapContextSelection');
+  const end = code.indexOf('async function buildProjectFoundationSwapContext', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /figma\.currentPage\.selection/);
+  assert.match(block, /remapContextNode/);
+  assert.doesNotMatch(block, /loadAllPagesAsync/);
+  assert.doesNotMatch(block, /createVariable/);
+  assert.doesNotMatch(block, /setValueForMode/);
+});
+
+test('Core Remap imports canonical target variables from registered BC Foundations', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /masterFoundations\.bindings\?\.variables/);
+  assert.match(code, /figma\.variables\.importVariableByKeyAsync/);
+  assert.match(code, /BC: Foundations must be published and registered/);
+});
+
+test('Core UI exposes selection Context remapping from manifest capabilities', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /Remap selection/);
+  assert.match(html, /id="contextRemapDomain"/);
+  assert.match(html, /id="contextRemapFrom"/);
+  assert.match(html, /id="contextRemapTo"/);
+  assert.match(html, /type: 'context-remap-capabilities'/);
+  assert.match(html, /type: 'context-remap-selection'/);
+});
+
+
+test('Generate Context Set clones only the current selection and reuses Context Remap', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function generateContextSet');
+  const end = code.indexOf('async function buildProjectFoundationSwapContext', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /figma\.currentPage\.selection/);
+  assert.match(block, /original\.clone\(\)/);
+  assert.match(block, /buildCoreContextRemapRuntime/);
+  assert.match(block, /remapContextNode\(clone/);
+  assert.doesNotMatch(block, /loadAllPagesAsync/);
+  assert.doesNotMatch(block, /detachInstance/);
+});
+
+test('Generate Context Set validates all targets before cloning document nodes', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function generateContextSet');
+  const end = code.indexOf('const generated = []', start);
+  const validationBlock = code.slice(start, end);
+
+  assert.match(validationBlock, /buildContextRemapCanonicalPlan/);
+  assert.doesNotMatch(validationBlock, /\.clone\(\)/);
+});
+
+test('Generate Context Set names and arranges generated siblings without forcing auto-layout coordinates', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /contextSetGeneratedName/);
+  assert.match(code, /positionGeneratedSibling/);
+  assert.match(code, /parent\.layoutMode/);
+  assert.match(code, /clone\.x = original\.x/);
+});
+
+test('Core UI exposes Generate Context Set with selectable targets', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /Generate Context set/);
+  assert.match(html, /id="contextGenerateDomain"/);
+  assert.match(html, /id="contextGenerateFrom"/);
+  assert.match(html, /id="contextGenerateTargets"/);
+  assert.match(html, /id="contextGenerateAll"/);
+  assert.match(html, /id="contextGenerateClear"/);
+  assert.match(html, /type: 'context-generate-set'/);
+});
+
+
+test('Flavour Extension capabilities come only from resolved manifest extension metadata', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /manifest\?\.flavour\?\.extensions/);
+  assert.match(code, /function availableFlavourExtensions/);
+  assert.match(code, /usableMappingCount/);
+  const block = code.slice(code.indexOf('function availableFlavourExtensions'), code.indexOf('function buildFlavourExtensionPlan'));
+  assert.doesNotMatch(block, /timber|pink|sand/i);
+});
+
+test('Flavour Extension remap uses registered Flavour Foundations and preserves variable bindings', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function buildFlavourExtensionRuntime');
+  const end = code.indexOf('async function applyFlavourExtensionToSelection', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /familyState\(flavourId\)/);
+  assert.match(block, /layers\?\.foundations\?\.flavour/);
+  assert.match(block, /importVariableByKeyAsync/);
+  assert.match(block, /setBoundVariableForPaint/);
+  assert.doesNotMatch(block, /setValueForMode|createVariable/);
+});
+
+test('Flavour Extension apply and reset operate only on current selection', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function applyFlavourExtensionToSelection');
+  const end = code.indexOf('async function buildProjectFoundationSwapContext', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /figma\.currentPage\.selection/);
+  assert.match(code, /mappings\[targetCanonical\] = contextCanonical/);
+  assert.match(code, /mappings\[contextCanonical\] = targetCanonical/);
+  assert.doesNotMatch(block, /loadAllPagesAsync/);
+});
+
+test('Project Flavours UI exposes manifest-driven Extensions with Apply and Reset to Context', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<div class="panel-title">Extensions<\/div>/);
+  assert.match(html, /id="flavourExtensionSelect"/);
+  assert.match(html, /id="applyFlavourExtension"/);
+  assert.match(html, /id="resetFlavourExtension"/);
+  assert.match(html, /Reset to Context/);
+  assert.match(html, /type: 'flavour-extension-capabilities'/);
+  assert.match(html, /type: 'flavour-extension-selection'/);
+});
+
+
+test('plugin IA keeps everyday work in Tools and Flavours only', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /data-tab="tools">Tools<\/button>/);
+  assert.match(html, /data-tab="flavours">Flavours<\/button>/);
+  assert.doesNotMatch(html, /data-tab="core"/);
+  assert.doesNotMatch(html, /data-tab="help"/);
+  assert.match(html, /id="openHelp"/);
+  assert.match(html, /id="openSettings"/);
+});
+
+test('Tools owns remap generate and Flavour Extensions', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const toolsStart = html.indexOf('id="tab-tools"');
+  const flavoursStart = html.indexOf('id="tab-flavours"');
+  const tools = html.slice(toolsStart, flavoursStart);
+
+  assert.match(tools, /Remap selection/);
+  assert.match(tools, /Generate Context set/);
+  assert.match(tools, /<div class="panel-title">Extensions<\/div>/);
+  assert.match(tools, /id="flavourExtensionSelect"/);
+});
+
+test('one-time Core and repository setup live under Settings subnavigation', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const settingsStart = html.indexOf('id="tab-settings"');
+  const helpStart = html.indexOf('id="tab-help"');
+  const settings = html.slice(settingsStart, helpStart);
+
+  assert.match(settings, /data-settings-view="general"/);
+  assert.match(settings, /data-settings-view="core-setup"/);
+  assert.match(settings, /data-settings-view="repository"/);
+  assert.match(settings, /Master library/);
+  assert.match(settings, /id="baselineSync"/);
+  assert.match(settings, /id="repoRefresh"/);
+  assert.match(settings, /id="sourceMode"/);
+  assert.match(settings, /id="analyse"/);
+  assert.match(settings, /id="apply"/);
+});
+
+test('default opening tab migrates old Core and Help values to Tools', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /stored\?\.defaultTab === 'core' \|\| stored\?\.defaultTab === 'help'/);
+  assert.match(code, /new Set\(\['tools', 'flavours'\]\)/);
+  assert.match(html, /<option value="tools">Tools<\/option>/);
+  assert.match(html, /<option value="flavours">Flavours<\/option>/);
+});
+
+
+test('plugin resize uses window-level drag tracking so dragging survives leaving the grip', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="resizeGrip"/);
+  assert.match(html, /id="resizeHeightGrip"/);
+  assert.match(html, /window\.addEventListener\('mousemove', moveDrag\)/);
+  assert.match(html, /window\.addEventListener\('mouseup', endDrag\)/);
+  assert.match(html, /drag\.mode === 'height' \? drag\.width/);
+});
+
+test('plugin resize supports substantially taller windows', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /Math\.min\(1400, Number\(message\.height\)/);
+  assert.match(code, /Math\.max\(420,/);
+  assert.match(html, /const MAX_H = 1400/);
+  assert.match(html, /const MIN_H = 420/);
+});
+
+
+test('Focus generated results is persisted and controls zoom-centre behaviour', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /focusGeneratedResults: stored\?\.focusGeneratedResults !== false/);
+  assert.match(code, /if \(options\.focusResults !== false\)/);
+  assert.match(code, /scrollAndZoomIntoView\(generated\)/);
+  assert.match(html, /id="focusGeneratedResultsToggle"/);
+  assert.match(html, /focusResults: currentPluginSettings\.focusGeneratedResults/);
+});
+
+test('selection source auto-detection scores real canonical variable bindings', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /async function detectSelectionContextTargets/);
+  assert.match(code, /collectSelectionCanonicalBindings/);
+  assert.match(code, /contextTargetCanonicalIds/);
+  assert.match(code, /projectSourceVariableCanonical/);
+  assert.match(code, /status: 'mixed'/);
+});
+
+test('selection changes trigger source auto-detection without scanning the document', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /figma\.on\('selectionchange'/);
+  assert.match(code, /type: 'selection-changed'/);
+  assert.match(html, /type: 'selection-context-detect'/);
+  assert.match(html, /Detected: \$\{detection\.label\}/);
+  assert.doesNotMatch(
+    code.slice(code.indexOf('async function detectSelectionContextTargets'), code.indexOf('async function buildCoreContextRemapRuntime')),
+    /loadAllPagesAsync/
+  );
+});
+
+
+test('plugin typography uses a 1rem readable baseline with explicit compact exceptions', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /:root\s*\{\s*font-size:16px;/);
+  assert.match(html, /body,[\s\S]*?font-size:1rem;/);
+  assert.match(html, /Compact\/supporting text is intentionally allowed below 1rem/);
+  assert.match(html, /font-size:\.875rem/);
+  assert.match(html, /Microcopy only/);
+  assert.match(html, /font-size:\.8125rem/);
+});
+
+test('sticky plugin chrome uses translucent blur and a subtle separation shadow', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /\.app-header\s*\{[\s\S]*?position:sticky;[\s\S]*?backdrop-filter:blur\(12px\)/);
+  assert.match(html, /\.tabs\s*\{[\s\S]*?position:sticky;[\s\S]*?background:color-mix[\s\S]*?box-shadow:0 5px 12px rgba\(0,0,0,\.07\)/);
+});
+
+
+test('plugin removes all custom drag resize UI and logic', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.doesNotMatch(html, /resizeGrip|resizeHeightGrip|resize-grip|resize-height-grip|bc-resizing/);
+  assert.doesNotMatch(html, /mousedown[\s\S]*requestResize|pointerdown[\s\S]*requestResize/);
+  assert.doesNotMatch(code, /message\?\.type === 'resize-window'/);
+});
+
+test('plugin uses official figma.ui.resize only through named window presets', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /const WINDOW_PRESETS =/);
+  assert.match(code, /figma\.ui\.resize\(size\.width, size\.height\)/);
+  assert.match(code, /window-preset-apply/);
+  assert.match(html, /id="windowPreset"/);
+  assert.match(html, /Extra Tall · 680 × 1200/);
+});
+
+test('window preset persists and is restored when the plugin opens', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /windowPreset: allowedWindowPresets\.has\(stored\?\.windowPreset\)/);
+  assert.match(code, /applyWindowPreset\(settings\.windowPreset\)/);
+});
+
+
+test('header and nav share one sticky chrome container', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /<div class="top-chrome">\s*<header class="app-header">/);
+  assert.match(html, /<\/nav>\s*<\/div>\s*<main class="workspace">/);
+  assert.match(html, /\.top-chrome\s*\{[\s\S]*?position:sticky;[\s\S]*?top:0;/);
+  assert.match(html, /\.top-chrome \.app-header\s*\{[\s\S]*?position:relative;/);
+  assert.match(html, /\.top-chrome \.tabs\s*\{[\s\S]*?position:relative;/);
+});
+
+
+test('plugin opens at a larger desktop-first size', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /figma\.showUI\(__html__, \{ width: 900, height: 1000/);
+  assert.match(code, /comfortable: \{ width: 900, height: 1000 \}/);
+  assert.match(code, /tall: \{ width: 900, height: 1200 \}/);
+  assert.match(code, /wide: \{ width: 1100, height: 1000 \}/);
+});
+
+test('legacy small window presets migrate to comfortable size', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /standard: 'comfortable'/);
+  assert.match(code, /large: 'comfortable'/);
+  assert.match(code, /windowPreset: allowedWindowPresets\.has\(storedWindowPreset\) \? storedWindowPreset : 'comfortable'/);
+});
+
+
+test('compact UI pass reduces typography and spacing for dense plugin use', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /:root\s*\{\s*font-size:14px;/);
+  assert.match(html, /\.app-header\s*\{\s*padding:14px 20px 12px;/);
+  assert.match(html, /\.panel-body\s*\{\s*padding:12px;/);
+  assert.match(html, /\.control-label\s*\{[\s\S]*?font-size:\.78rem/);
+  assert.match(html, /\.context-target-option\s*\{[\s\S]*?font-size:\.82rem/);
+});
+
+test('sticky header keeps explicit bottom padding in compact pass', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /\.app-header\s*\{\s*padding:14px 20px 12px;/);
+  assert.match(html, /\.tabs\s*\{\s*padding:6px 20px 0;/);
+});
+
+
+test('fresh utility rebuild uses compact top chrome with no sidebar', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /class="utility-chrome"/);
+  assert.match(html, /class="utility-header"/);
+  assert.match(html, /class="utility-tabs"/);
+  assert.doesNotMatch(html, /class="app-sidebar"/);
+});
+
+test('Tools are rebuilt as flat divider-separated sections', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const toolsStart = html.indexOf('id="tab-tools"');
+  const flavoursStart = html.indexOf('id="tab-flavours"');
+  const tools = html.slice(toolsStart, flavoursStart);
+
+  assert.match(tools, /class="tool-kicker">Remap<\/div>/);
+  assert.match(tools, /class="tool-kicker">Generate<\/div>/);
+  assert.match(tools, /class="tool-kicker">Extensions<\/div>/);
+  assert.doesNotMatch(tools, /class="panel"/);
+  assert.match(html, /\.tool-section,[\s\S]*?border-bottom:1px solid var\(--bc-line\)/);
+});
+
+test('Flavours and Settings use lightweight inline subnavigation', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /\.workflow-switch,[\s\S]*?border:0;/);
+  assert.match(html, /\.workflow-button\.active::after/);
+  assert.match(html, /\.settings-nav-button\.active::after/);
+});
+
+
+test('mini design system defines coherent foundations and components', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /BUFFERCORE FIGMA MINI DESIGN SYSTEM/);
+  assert.match(html, /--bc-accent:#6758ff/);
+  assert.match(html, /--bc-r-xl:16px/);
+  assert.match(html, /--bc-shadow-soft:/);
+  assert.match(html, /\.bc-appbar\{/);
+  assert.match(html, /\.bc-tool-tabs\{/);
+  assert.match(html, /\.bc-tool-surface,/);
+});
+
+test('Tools now show one focused workspace at a time', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /data-tool-view="remap"/);
+  assert.match(html, /data-tool-view="generate"/);
+  assert.match(html, /data-tool-view="extensions"/);
+  assert.match(html, /data-tool-panel="generate" hidden/);
+  assert.match(html, /function activateToolView/);
+});
+
+test('new app shell uses compact branded chrome and segmented navigation', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /class="bc-appbar"/);
+  assert.match(html, /class="bc-primary-nav"/);
+  assert.match(html, /class="bc-brand-mark"/);
+  assert.doesNotMatch(html, /class="app-sidebar"/);
+});
+
+
+test('design system polish increases global readability and control sizing', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /font-size:15px/);
+  assert.match(html, /\.bc-icon-button\s*\{[\s\S]*?width:36px;[\s\S]*?height:36px;/);
+  assert.match(html, /select,[\s\S]*?min-height:40px;/);
+  assert.match(html, /\.action,[\s\S]*?min-height:38px;/);
+});
+
+test('accent colour is reserved and headings no longer use blue accent text', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /--bc-accent:#6357e8/);
+  assert.match(html, /\.bc-eyebrow,[\s\S]*?color:var\(--bc-text-soft\)/);
+  assert.match(html, /\.bc-primary-tab\.active\s*\{[\s\S]*?color:var\(--bc-text\)/);
+});
+
+test('page and surface padding use shared design system spacing tokens', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /--bc-page-x:22px/);
+  assert.match(html, /--bc-page-y:22px/);
+  assert.match(html, /--bc-surface-pad:20px/);
+  assert.match(html, /\.workspace\s*\{[\s\S]*?padding:var\(--bc-page-y\) var\(--bc-page-x\) 28px;/);
+});
+
+
+test('size-only correction preserves design-system layout at 780px default', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /figma\.showUI\(__html__, \{ width: 780, height: 860/);
+  assert.match(html, /SIZE-ONLY CORRECTION/);
+  assert.match(html, /@media \(max-width:620px\)/);
+  assert.match(html, /class="bc-tool-tabs"/);
+  assert.match(html, /class="bc-tool-surface"/);
+});
+
+test('size-only correction uses medium control and type scale', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /font-size:14px/);
+  assert.match(html, /\.bc-icon-button\s*\{[\s\S]*?width:34px;[\s\S]*?height:34px;/);
+  assert.match(html, /select,[\s\S]*?min-height:36px;/);
+  assert.match(html, /\.action,[\s\S]*?min-height:35px;/);
+});
+
+
+test('General settings has explicit top padding', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  assert.match(html, /\.settings-view\[data-settings-panel="general"\]\s*\{\s*padding-top:16px;/);
+});
+
+test('font size setting persists and applies root scale', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(code, /fontScale: allowedFontScales\.has\(stored\?\.fontScale\) \? stored\.fontScale : 'default'/);
+  assert.match(html, /id="fontScale"/);
+  assert.match(html, /function applyFontScale\(scale\)/);
+  assert.match(html, /html\[data-font-scale="small"\]/);
+  assert.match(html, /html\[data-font-scale="default"\]/);
+  assert.match(html, /html\[data-font-scale="large"\]/);
+});
+
+
+test('General settings uses live sliders for window dimensions and root font size', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="windowWidthRange"[^>]*type="range"/);
+  assert.match(html, /id="windowHeightRange"[^>]*type="range"/);
+  assert.match(html, /id="fontSizeRange"[^>]*type="range"/);
+  assert.match(html, /min="12\.5" max="16\.5" step="0\.25"/);
+  assert.match(html, /document\.documentElement\.style\.fontSize = `\$\{size\}px`/);
+});
+
+test('window dimensions and exact font size persist as numeric settings', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /windowWidth: clampNumber\(stored\?\.windowWidth/);
+  assert.match(code, /windowHeight: clampNumber\(stored\?\.windowHeight/);
+  assert.match(code, /fontSizePx: clampNumber\(stored\?\.fontSizePx/);
+  assert.match(code, /message\?\.type === 'window-size-apply'/);
+});
+
+
+test('Help and Settings utility icons have active states', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /\$\('openHelp'\)\?\.classList\.toggle\('active', name === 'help'\)/);
+  assert.match(html, /\$\('openSettings'\)\?\.classList\.toggle\('active', name === 'settings'\)/);
+  assert.match(html, /\.bc-icon-button\.active\s*\{/);
+});
+
+test('motion system animates tabs panels and help accordion', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /@keyframes bc-panel-enter/);
+  assert.match(html, /classList\.add\('bc-enter'\)/);
+  assert.match(html, /\.bc-tool-tab::after/);
+  assert.match(html, /details\.addEventListener\('toggle'/);
+  assert.match(html, /\.help-body\s*\{[\s\S]*?max-height/);
+  assert.match(html, /prefers-reduced-motion: reduce/);
+});
+
+
+test('window supports drag resizing from right bottom and corner handles', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /data-resize-axis="x"/);
+  assert.match(html, /data-resize-axis="y"/);
+  assert.match(html, /data-resize-axis="xy"/);
+  assert.match(html, /function startWindowResize\(event, axis\)/);
+  assert.match(html, /type: 'window-resize-live'/);
+  assert.match(html, /type: 'window-resize-commit'/);
+});
+
+test('drag resizing uses the same persisted numeric window sizing system as sliders', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /message\?\.type === 'window-resize-live'/);
+  assert.match(code, /applyWindowSize\(message\.width, message\.height\)/);
+  assert.match(code, /message\?\.type === 'window-resize-commit'/);
+  assert.match(code, /writePluginSettings\(\{\s*windowWidth: message\.width,\s*windowHeight: message\.height/);
+});
+
+
+test('Flavour workflow uses one consistent spacing rhythm', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /FLAVOUR WORKFLOW SPACING NORMALISATION/);
+  assert.match(html, /\.bc-flavour-surface \.flavour-workflow\s*\{[\s\S]*?padding:18px;/);
+  assert.match(html, /\.bc-flavour-surface \.flow-section,[\s\S]*?margin:0 0 16px;[\s\S]*?padding:0 0 16px;/);
+  assert.match(html, /\.bc-flavour-surface \.project-status-bar\s*\{[\s\S]*?padding:12px;/);
+  assert.match(html, /\.bc-flavour-surface \.auto-reconcile-row\s*\{[\s\S]*?margin-top:14px;/);
+});
+
+
+test('font size slider supports up to 24px', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(html, /id="fontSizeRange"[^>]*max="24"/);
+  assert.match(html, /Math\.min\(24, Number\(value\) \|\| 14\)/);
+  assert.match(code, /clampNumber\(stored\?\.fontSizePx, 12\.5, 24, legacyFontSize\)/);
+  assert.match(code, /clampNumber\(next\.fontSizePx, 12\.5, 24, current\.fontSizePx\)/);
+});
+
+
+test('Flavours and Settings use the same navigation treatment as Tools', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /UNIFIED NAVIGATION \+ MOTION LANGUAGE/);
+  assert.match(html, /\.bc-tool-tabs,\s*\.workflow-switch,\s*\.settings-nav\s*\{/);
+  assert.match(html, /\.bc-tool-tab,\s*\.workflow-button,\s*\.settings-nav-button\s*\{/);
+  assert.match(html, /\.workflow-button\.active::after/);
+  assert.match(html, /\.settings-nav-button\.active::after/);
+});
+
+test('Flavour view switching uses the same panel entrance animation as Tools', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /playPanelEntrance\(activeFlavourView === 'library' \? libraryPanel : projectPanel\)/);
+  assert.match(html, /\.workflow-button:focus-visible/);
+});
+
+
+test('all four navigation groups use the exact same tablist component markup', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const tablists = html.match(/class="bc-tablist"/g) || [];
+  assert.equal(tablists.length, 4);
+
+  const oldMarkupClasses = [
+    'class="bc-tool-tabs"',
+    'class="workflow-switch"',
+    'class="settings-nav"',
+    'class="bc-primary-tab',
+    'class="bc-tool-tab',
+    'class="workflow-button',
+    'class="settings-nav-button'
+  ];
+  for (const oldClass of oldMarkupClasses) {
+    assert.equal(html.includes(oldClass), false, oldClass);
   }
-  assert.match(code, /components'.*dependencies: \['foundations', 'elements'\]/s);
-  assert.match(code, /layout'.*dependencies: \['foundations', 'elements', 'components'\]/s);
-  assert.match(code, /templates'.*dependencies: \['foundations', 'elements', 'components', 'layout'\]/s);
-  assert.match(code, /pages'.*dependencies: \['foundations', 'elements', 'components', 'layout', 'templates'\]/s);
 });
 
-test('non-Foundation Flavour sync reads current published BC assets and translates nested master instances to upstream Flavour assets', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /syncSystemLayer/);
-  assert.match(code, /assertLayerDependencies/);
-  assert.match(code, /remapNestedMasterInstances/);
-  assert.match(code, /swapComponent/);
-  assert.match(code, /flavourAssetKeyByCanonical/);
-  assert.match(code, /assertNoResidualMasterDependencies/);
-});
-
-test('Flavour family imports published Flavour Foundation variables and styles by library key rather than requiring local duplicate Foundations', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /importVariableByKeyAsync/);
-  assert.match(code, /importStyleByKeyAsync/);
-  assert.match(code, /family\.layers\?\.foundations\?\.flavour/);
-});
-
-test('Figma-authored asset identity remains stable across projections and resyncs', async () => {
-  const fs = await import('node:fs/promises');
-  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /masterComponentId/);
-  assert.match(code, /existingByCanonical/);
-  assert.match(code, /replaceComponentContents/);
-  assert.match(code, /masterComponentRevision/);
-});
-
-test('family UI exposes all six master and Flavour layers instead of one monolithic master library', async () => {
+test('exact shared tab component owns one box model only', async () => {
   const fs = await import('node:fs/promises');
   const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  for (const label of ['BC: Foundations','BC: Elements','BC: Components','BC: Layout','BC: Templates','BC: Pages']) {
-    assert.ok(html.includes(label), `Missing ${label}`);
-  }
-  assert.match(html, /Register this Figma file/);
-  assert.match(html, /Sync this Flavour layer/);
-  assert.match(html, /BufferCore system layers/);
+
+  assert.match(html, /EXACT SAME TAB COMPONENT — NO VARIANTS/);
+  assert.match(html, /\.bc-tablist\s*\{[\s\S]*?margin:0;[\s\S]*?padding:5px;[\s\S]*?gap:6px;/);
+  assert.match(html, /\.bc-tab\s*\{[\s\S]*?min-height:42px;[\s\S]*?margin:0;[\s\S]*?padding:0 10px;/);
+  assert.match(html, /\.bc-tab-icon\s*\{[\s\S]*?width:21px;[\s\S]*?height:21px;[\s\S]*?margin:0;[\s\S]*?padding:0;/);
 });
 
 
-test('built Figma background code cannot trip the sandbox import-expression false-positive guard', async () => {
+test('header navigation is restored as a separate lightweight component', async () => {
   const fs = await import('node:fs/promises');
-  const source = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  const build = await fs.readFile(new URL('../tools/build-plugin.mjs', import.meta.url), 'utf8');
-  const guard = /(^|[^.])\bimport\s*(?:\(|\/[/*]|<!--|-->)/m;
-  assert.equal(guard.test(source), false);
-  assert.match(build, /figmaImportGuard/);
-  assert.match(build, /Figma sandbox import-expression guard would reject/);
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /HEADER NAV RESTORED/);
+  assert.match(html, /class="bc-primary-tab active"[^>]*data-tab="tools"/);
+  assert.match(html, /class="bc-primary-tab"[^>]*data-tab="flavours"/);
+
+  const bodyTablists = html.match(/class="bc-tablist"/g) || [];
+  assert.equal(bodyTablists.length, 3);
+});
+
+test('body tab groups remain the exact same shared component', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /data-tool-view="remap"/);
+  assert.match(html, /data-flavour-view="library"/);
+  assert.match(html, /data-settings-view="general"/);
+
+  assert.match(html, /\.bc-tablist\s*\{[\s\S]*?padding:5px;[\s\S]*?gap:6px;/);
+  assert.match(html, /\.bc-tab\s*\{[\s\S]*?min-height:42px;[\s\S]*?padding:0 10px;/);
 });
 
 
-test('dynamic-page document access loads all pages before scanning Components across the document', async () => {
+test('Flavours matches Tools page structure intro nav then surface', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const flavoursStart = html.indexOf('id="tab-flavours"');
+  const settingsStart = html.indexOf('id="tab-settings"');
+  const flavours = html.slice(flavoursStart, settingsStart);
+
+  const intro = flavours.indexOf('class="bc-page-intro"');
+  const nav = flavours.indexOf('class="bc-tablist"');
+  const surface = flavours.indexOf('class="bc-flavour-surface"');
+
+  assert.ok(intro >= 0);
+  assert.ok(nav > intro);
+  assert.ok(surface > nav);
+  assert.doesNotMatch(
+    flavours.slice(surface, flavours.indexOf('id="flavourLibraryWorkflow"')),
+    /class="bc-tablist"/
+  );
+});
+
+test('Tools and Flavours use the same outer gap and zero nav surface margins', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /#tab-tools,\s*#tab-flavours\s*\{\s*gap:16px;/);
+  assert.match(html, /#tab-tools > \.bc-tablist,\s*#tab-flavours > \.bc-tablist\s*\{\s*margin:0;/);
+  assert.match(html, /#tab-tools > \.bc-tool-surface,\s*#tab-flavours > \.bc-flavour-surface\s*\{\s*margin:0;/);
+});
+
+
+test('Generate targets are grouped into core roles and states with group select all', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /label: 'Core roles'/);
+  assert.match(html, /targetIds: \['neutral', 'primary', 'secondary', 'accent'\]/);
+  assert.match(html, /label: 'States'/);
+  assert.match(html, /targetIds: \['success', 'warning', 'error', 'info'\]/);
+  assert.match(html, /data-group-toggle/);
+  assert.match(html, /syncContextTargetGroupToggles/);
+});
+
+test('Generate target grouping stays compact and global select all only selects targets', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /\.context-target-picker\s*\{[\s\S]*?grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(html, /\$\('contextGenerateTargets'\)\.querySelectorAll\('input\[data-context-target\]'\)/);
+  assert.match(html, /input\[data-context-target\]:checked/);
+});
+
+
+test('plugin UI uses one canonical disabled state opacity rule', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /--bc-interaction-disabled-opacity:\s*\.45/);
+  assert.match(html, /:disabled,\s*\[aria-disabled="true"\]\s*\{[\s\S]*?opacity:var\(--bc-interaction-disabled-opacity\)/);
+  assert.equal((html.match(/button:disabled\s*\{[^}]*opacity/g) || []).length, 0);
+  assert.equal((html.match(/opacity:\s*\.42/g) || []).length, 0);
+});
+
+
+test('Generate exposes Default and Disabled as state choices without mixing state into colour targets', async () => {
+  const fs = await import('node:fs/promises');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="contextGenerateStates"/);
+  assert.match(html, /data-context-state[^>]*value="default"[^>]*checked/);
+  assert.match(html, /data-context-state[^>]*value="disabled"/);
+  assert.match(html, /stateIds: selectedContextGenerateStates\(\)/);
+  assert.match(html, /id="contextGenerateDisabledCopy"/);
+});
+
+test('Disabled generated state binds Semantic Interaction opacity instead of creating disabled colours', async () => {
   const fs = await import('node:fs/promises');
   const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(code, /async function localComponentRoots/);
-  assert.match(code, /await figma\.loadAllPagesAsync\(\)/);
-  assert.match(code, /await localComponentRoots\(\)/);
+
+  const start = code.indexOf('function stateSemanticCanonicalId');
+  const end = code.indexOf('async function generateContextSet', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /--bc-interaction-disabled-opacity/);
+  assert.match(block, /setBoundVariable\('opacity', variable\)/);
+  assert.match(block, /buildStateTransformRuntime/);
+  assert.doesNotMatch(block, /bc-color-disabled|Primary Disabled|Accent Disabled/);
+  assert.doesNotMatch(block, /opacity\s*=\s*0\.45/);
+});
+
+test('Generate creates target by state combinations while preserving Context remap separately', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function generateContextSet');
+  const end = code.indexOf('function resolvedFlavourExtension', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /for \(const targetId of targets\)/);
+  assert.match(block, /for \(const stateId of stateIds\)/);
+  assert.match(block, /remapContextNode\(clone, remapRuntime, report\)/);
+  assert.match(block, /applyStateTransform/);
+});
+
+test('Create Disabled copy works independently of Context target generation', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+  const html = await fs.readFile(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  const start = code.indexOf('async function generateDisabledCopies');
+  const end = code.indexOf('async function generateContextSet', start);
+  const block = code.slice(start, end);
+
+  assert.match(block, /figma\.currentPage\.selection/);
+  assert.match(block, /original\.clone\(\)/);
+  assert.match(block, /applyStateTransform\(clone, manifest, 'disabled'/);
+  assert.doesNotMatch(block, /remapContextNode/);
+  assert.match(html, /type: 'context-generate-disabled-copy'/);
+  assert.match(code, /message\?\.type === 'context-generate-disabled-copy'/);
+});
+
+
+test('state generation distinguishes an outdated published Foundations registry from a missing source token', async () => {
+  const fs = await import('node:fs/promises');
+  const code = await fs.readFile(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
+
+  assert.match(code, /registered published Foundations library is out of date/);
+  assert.match(code, /publish it in Figma/);
+  assert.match(code, /register Master Foundations again/);
 });

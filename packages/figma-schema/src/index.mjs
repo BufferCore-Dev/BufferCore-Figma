@@ -147,8 +147,8 @@ function colourPresentation(token) {
       if (tone) return { ...tone, ranks: [rootOrder.tones, toneOrder[root], tone.ranks.at(-1)] };
     }
 
-    if (["disabled", "focus", "link", "placeholder"].includes(root)) {
-      const interactionOrder = { link: 1, focus: 2, placeholder: 3, disabled: 4 };
+    if (["focus", "link", "placeholder"].includes(root)) {
+      const interactionOrder = { link: 1, focus: 2, placeholder: 3 };
       return { segments: ["Interaction", displaySegment(root), ...parts.slice(1).map(displaySegment)], ranks: [rootOrder.interaction, interactionOrder[root], ...parts.slice(1).map((part) => roleOrder[part] || scaleRank(part))] };
     }
 
@@ -221,8 +221,22 @@ function genericFoundationPresentation(token) {
     return { segments: clean.map(displaySegment), ranks: [primitiveRoot[clean[0]] || 50, ...clean.slice(1).map(scaleRank)] };
   }
   if (foundation === "effects") {
-    const clean = parts[0] === "blur" ? parts.slice(1) : parts;
-    return { segments: ["Blur", ...clean.map(displaySegment)], ranks: [1, ...clean.map(scaleRank)] };
+    if (parts[0] === "blur") {
+      const clean = parts.slice(1);
+      return { segments: ["Blur", ...clean.map(displaySegment)], ranks: [1, ...clean.map(scaleRank)] };
+    }
+    if (parts[0] === "opacity") {
+      const clean = parts.slice(1);
+      return { segments: ["Opacity", ...clean.map(displaySegment)], ranks: [2, ...clean.map(scaleRank)] };
+    }
+  }
+  if (foundation === "interaction") {
+    const clean = parts[0] === "interaction" ? parts.slice(1) : parts;
+    const stateOrder = { disabled: 1 };
+    return {
+      segments: clean.map(displaySegment),
+      ranks: [stateOrder[clean[0]] || 50, ...clean.slice(1).map((part) => part === "opacity" ? 1 : scaleRank(part))]
+    };
   }
   if (foundation === "breakpoints") {
     const clean = parts[0] === "breakpoint" ? parts.slice(1) : parts;
@@ -810,6 +824,164 @@ function buildEffectStyles(tokens, config, diagnostics) {
   return styles;
 }
 
+
+function contextTargetStyleId(domainId, targetId, slotCssVariable = null) {
+  if (domainId === "typography") {
+    const match = String(targetId || "").match(/^(display|heading|paragraph|label|overline)-(\d+)$/);
+    return match ? `text.${match[1]}.${match[2]}` : null;
+  }
+
+  if (domainId === "shadows") {
+    const level = String(slotCssVariable || "").match(/--bc-shadow-context-(fallen|resting|floating)$/)?.[1];
+    return level ? `effect.shadow.${targetId}.${level}` : null;
+  }
+
+  return null;
+}
+
+function buildContextProjections(canonical, variables, styles, diagnostics) {
+  const variableIds = new Set(variables.map((item) => item.id));
+  const styleIds = new Set(styles.map((item) => item.id));
+  const projections = {};
+  const contracts = canonical.contextContracts?.domains || {};
+
+  for (const [domainId, domain] of Object.entries(contracts)) {
+    const representation = domain.contract?.figma?.representation || null;
+    const projection = {
+      domain: domainId,
+      representation,
+      slotCount: domain.slotCount || 0,
+      targetCount: domain.targetCount || 0,
+      slots: {},
+      targets: {}
+    };
+
+    if (representation === "variables") {
+      for (const slot of Object.values(domain.slots || {})) {
+        projection.slots[slot.cssVariable] = {
+          canonicalId: slot.id,
+          available: variableIds.has(slot.id)
+        };
+      }
+      for (const [targetId, target] of Object.entries(domain.targets || {})) {
+        projection.targets[targetId] = {
+          id: targetId,
+          label: target.label,
+          mappings: Object.fromEntries(
+            Object.entries(target.mappings || {}).map(([slotCss, targetCss]) => {
+              const targetToken = (canonical.tokens || []).find((item) => item.cssVariable === targetCss);
+              return [slotCss, {
+                canonicalId: targetToken?.id || null,
+                available: Boolean(targetToken && variableIds.has(targetToken.id))
+              }];
+            })
+          )
+        };
+      }
+    } else if (representation === "text-styles") {
+      for (const [targetId, target] of Object.entries(domain.targets || {})) {
+        const styleId = contextTargetStyleId(domainId, targetId);
+        projection.targets[targetId] = {
+          id: targetId,
+          label: target.label,
+          styleId,
+          available: Boolean(styleId && styleIds.has(styleId))
+        };
+      }
+    } else if (representation === "effect-styles") {
+      for (const slot of Object.values(domain.slots || {})) {
+        projection.slots[slot.cssVariable] = { canonicalId: slot.id };
+      }
+      for (const [targetId, target] of Object.entries(domain.targets || {})) {
+        projection.targets[targetId] = {
+          id: targetId,
+          label: target.label,
+          styles: Object.fromEntries(
+            Object.values(domain.slots || {}).map((slot) => {
+              const styleId = contextTargetStyleId(domainId, targetId, slot.cssVariable);
+              return [slot.cssVariable, {
+                styleId,
+                available: Boolean(styleId && styleIds.has(styleId))
+              }];
+            })
+          )
+        };
+      }
+    }
+
+    projections[domainId] = projection;
+  }
+
+  for (const [domainId, projection] of Object.entries(projections)) {
+    if (projection.representation === "variables") {
+      const unavailable = [
+        ...Object.values(projection.slots).filter((item) => !item.available),
+        ...Object.values(projection.targets).flatMap((target) => Object.values(target.mappings || {})).filter((item) => !item.available)
+      ];
+      if (unavailable.length) diagnostics.errors.push({
+        code: "figma-context-projection-incomplete",
+        domain: domainId,
+        message: `${domainId} Context has ${unavailable.length} unavailable variable projection(s).`
+      });
+    }
+    if (projection.representation === "text-styles") {
+      const unavailable = Object.values(projection.targets).filter((item) => !item.available);
+      if (unavailable.length) diagnostics.errors.push({
+        code: "figma-context-projection-incomplete",
+        domain: domainId,
+        message: `${domainId} Context has ${unavailable.length} unavailable Text Style target(s).`
+      });
+    }
+    if (projection.representation === "effect-styles") {
+      const unavailable = Object.values(projection.targets)
+        .flatMap((target) => Object.values(target.styles || {}))
+        .filter((item) => !item.available);
+      if (unavailable.length) diagnostics.errors.push({
+        code: "figma-context-projection-incomplete",
+        domain: domainId,
+        message: `${domainId} Context has ${unavailable.length} unavailable Effect Style target(s).`
+      });
+    }
+  }
+
+  return projections;
+}
+
+function buildInteractionStateProjections(canonical, variables, diagnostics) {
+  const byCss = new Map(variables.map((item) => [item.cssVariable, item]));
+  const result = {};
+
+  for (const [stateId, contract] of Object.entries(canonical.foundationContracts?.interactionStates || {})) {
+    const variable = byCss.get(contract.semantic);
+    result[stateId] = {
+      id: stateId,
+      representation: contract.figma?.representation || null,
+      canonicalId: variable?.id || null,
+      variableId: variable?.id || null,
+      scopes: variable?.scopes || [],
+      available: Boolean(variable)
+    };
+
+    if (contract.figma?.required && !variable) {
+      diagnostics.errors.push({
+        code: "figma-interaction-state-missing",
+        state: stateId,
+        message: `${stateId} is required in Figma but ${contract.semantic} was not projected.`
+      });
+    }
+
+    if (variable && contract.figma?.scope && !(variable.scopes || []).includes(contract.figma.scope)) {
+      diagnostics.errors.push({
+        code: "figma-interaction-state-scope-mismatch",
+        state: stateId,
+        message: `${stateId} must include Figma ${contract.figma.scope} scope.`
+      });
+    }
+  }
+
+  return result;
+}
+
 export function validateFigmaManifest(manifest) {
   const errors = [];
   const required = ["schemaVersion", "platform", "system", "modeDimensions", "collections", "variables", "retiredVariables", "styles", "diagnostics"];
@@ -914,6 +1086,9 @@ export function buildFigmaManifest({
     ...buildEffectStyles(canonical.tokens || [], config, diagnostics)
   ].sort((a, b) => `${a.type}/${a.name}`.localeCompare(`${b.type}/${b.name}`));
 
+  const contextProjections = buildContextProjections(canonical, variables, styles, diagnostics);
+  const interactionStates = buildInteractionStateProjections(canonical, variables, diagnostics);
+
   const primitiveVariableCount = variables.filter((variable) => variable.layer === "primitive").length;
   const flavourOverrideCount = variables.filter((variable) => variable.provenance?.flavourOverride).length;
   const flavourSemanticMappingCount = variables.filter((variable) => variable.provenance?.flavourSemanticMapping).length;
@@ -929,6 +1104,10 @@ export function buildFigmaManifest({
     },
     repository: canonical.repository || null,
     flavour: canonical.flavour || null,
+    foundationContracts: canonical.foundationContracts || null,
+    contextContracts: canonical.contextContracts || { schemaVersion: 1, source: null, domains: {}, diagnostics: [] },
+    contextProjections,
+    interactionStates,
     library: {
       target: canonical.flavour ? `flavour:${canonical.flavour.id}` : "baseline",
       kind: canonical.flavour ? "flavour" : "baseline",

@@ -3,7 +3,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { repositoryState } from '../packages/repository-sync/src/index.mjs';
@@ -179,33 +179,186 @@ function currentStatus() {
   };
 }
 
+async function runRepositorySync(flavour, mode) {
+  const args = ['run', 'repo:sync', '--', '--source', mode];
+  if (flavour) args.push('--flavour', flavour);
+
+  const invocation = process.env.npm_execpath
+    ? { command: process.execPath, args: [process.env.npm_execpath, ...args] }
+    : process.platform === 'win32'
+      ? { command: process.env.ComSpec || process.env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...args] }
+      : { command: 'npm', args };
+
+  return execFileAsync(invocation.command, invocation.args, {
+    cwd: root,
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024
+  });
+}
+
+function isGitHubUnavailable(error) {
+  const text = [error?.message, error?.stdout, error?.stderr]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+
+  return text.includes('account is suspended')
+    || text.includes('requested url returned error: 403')
+    || text.includes('authentication failed')
+    || text.includes('could not read username')
+    || text.includes('permission denied');
+}
+
 async function sync(flavour, requestedSource = 'local') {
   if (syncing) throw new Error('A repository sync is already running.');
   syncing = true;
-  sourceMode = requestedSource === 'github' ? 'github' : 'local';
+
+  const wantedSource = requestedSource === 'github' ? 'github' : 'local';
+
   try {
-    const args = ['run', 'repo:sync', '--', '--source', sourceMode];
-    if (flavour) args.push('--flavour', flavour);
-    const invocation = process.env.npm_execpath
-      ? { command: process.execPath, args: [process.env.npm_execpath, ...args] }
-      : process.platform === 'win32'
-        ? { command: process.env.ComSpec || process.env.COMSPEC || 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...args] }
-        : { command: 'npm', args };
-    const { stdout, stderr } = await execFileAsync(invocation.command, invocation.args, {
-      cwd: root,
-      windowsHide: true,
-      maxBuffer: 16 * 1024 * 1024
-    });
+    let result;
+    let fallback = null;
+
+    try {
+      result = await runRepositorySync(flavour, wantedSource);
+      sourceMode = wantedSource;
+    } catch (error) {
+      if (wantedSource !== 'github' || !isGitHubUnavailable(error)) throw error;
+
+      result = await runRepositorySync(flavour, 'local');
+      sourceMode = 'local';
+      fallback = {
+        from: 'github',
+        to: 'local',
+        reason: 'GitHub unavailable; built from local workspace instead.'
+      };
+    }
+
     const manifest = readJson(manifestPath);
     if (!manifest) throw new Error('Repository sync completed but no Figma manifest was produced.');
-    return { ok: true, manifest, stdout, stderr, status: currentStatus() };
+
+    return {
+      ok: true,
+      manifest,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      fallback,
+      status: currentStatus()
+    };
   } finally {
     syncing = false;
   }
 }
 
+async function runGit(args, cwd = root) {
+  const { stdout = '', stderr = '' } = await execFileAsync('git', args, {
+    cwd,
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024
+  });
+  return { stdout: stdout.trim(), stderr: stderr.trim() };
+}
+
+function configuredGitHubAccount() {
+  try {
+    return execFileSync('git', ['config', '--get', 'credential.https://github.com.username'], {
+      cwd: corePath,
+      encoding: 'utf8',
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function githubCredentialStatus() {
+  let available = false;
+  let version = null;
+  let accounts = [];
+
+  try {
+    const result = await runGit(['credential-manager', '--version'], corePath);
+    available = true;
+    version = result.stdout || null;
+  } catch {}
+
+  if (available) {
+    try {
+      const result = await runGit(['credential-manager', 'github', 'list'], corePath);
+      accounts = result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => line.replace(/^\*?\s*/, ''));
+    } catch {}
+  }
+
+  const configuredAccount = configuredGitHubAccount();
+  const authorised = Boolean(
+    configuredAccount &&
+    accounts.some((account) => account.toLowerCase() === configuredAccount.toLowerCase())
+  );
+
+  return { ok: true, available, version, accounts, configuredAccount, authorised };
+}
+
+function validateGitHubUsername(value) {
+  const username = String(value || '').trim();
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(username)) {
+    throw new Error('Enter a valid GitHub username.');
+  }
+  return username;
+}
+
+async function configureGitHubAccount(username) {
+  const repos = [corePath, flavoursPath].filter((repoPath) => fs.existsSync(repoPath));
+  for (const repoPath of repos) {
+    await runGit(['config', 'credential.https://github.com.username', username], repoPath);
+  }
+}
+
+async function authenticateGitHub(username, { force = false } = {}) {
+  username = validateGitHubUsername(username);
+
+  const args = ['credential-manager', 'github', 'login', '--username', username, '--browser'];
+  if (force) args.push('--force');
+
+  try {
+    await runGit(args, corePath);
+  } catch (error) {
+    const details = [error?.message, error?.stdout, error?.stderr].filter(Boolean).join('\n');
+    throw new Error(details || 'GitHub authentication failed.');
+  }
+
+  await configureGitHubAccount(username);
+  return githubCredentialStatus();
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return json(res, 204, {});
+  if (req.method === 'GET' && req.url === '/auth/github') {
+    try {
+      return json(res, 200, await githubCredentialStatus());
+    } catch (error) {
+      return json(res, 500, { ok: false, error: error?.message || String(error) });
+    }
+  }
+  if (req.method === 'POST' && req.url === '/auth/github') {
+    let raw = '';
+    req.setEncoding('utf8');
+    for await (const chunk of req) raw += chunk;
+    let body = {};
+    try { body = raw ? JSON.parse(raw) : {}; }
+    catch { return json(res, 400, { ok: false, error: 'Invalid JSON request.' }); }
+
+    try {
+      return json(res, 200, await authenticateGitHub(body.username, { force: Boolean(body.force) }));
+    } catch (error) {
+      return json(res, 400, { ok: false, error: error?.message || String(error) });
+    }
+  }
+
   if (req.method === 'GET' && req.url === '/status') return json(res, 200, currentStatus());
   if (req.method === 'GET' && req.url === '/manifest') {
     const manifest = readJson(manifestPath);

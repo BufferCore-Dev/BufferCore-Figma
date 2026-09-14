@@ -12,7 +12,35 @@ import {
   buildBindingTranslationRegistry
 } from '../../packages/figma-plugin-core/src/index.mjs';
 
-figma.showUI(__html__, { width: 620, height: 780, themeColors: true });
+figma.showUI(__html__, { width: 680, height: 760, themeColors: true });
+
+const PLUGIN_SETTINGS_KEY = 'buffercore.plugin.settings';
+
+async function readPluginSettings() {
+  const stored = await figma.clientStorage.getAsync(PLUGIN_SETTINGS_KEY).catch(() => null);
+  const migratedDefault = stored?.defaultTab === 'core' || stored?.defaultTab === 'help'
+    ? 'tools'
+    : stored?.defaultTab;
+  const allowedTabs = new Set(['tools', 'flavours']);
+  return {
+    defaultTab: allowedTabs.has(migratedDefault) ? migratedDefault : 'tools',
+    focusGeneratedResults: stored?.focusGeneratedResults !== false
+  };
+}
+
+async function writePluginSettings(next = {}) {
+  const current = await readPluginSettings();
+  const allowedTabs = new Set(['tools', 'flavours']);
+  const result = {
+    ...current,
+    ...(allowedTabs.has(next.defaultTab) ? { defaultTab: next.defaultTab } : {}),
+    ...(typeof next.focusGeneratedResults === 'boolean'
+      ? { focusGeneratedResults: next.focusGeneratedResults }
+      : {})
+  };
+  await figma.clientStorage.setAsync(PLUGIN_SETTINGS_KEY, result);
+  return result;
+}
 
 const REPOSITORY_BRIDGE_URL = 'http://localhost:3847';
 
@@ -596,22 +624,146 @@ function inferSystemLayerFromName() {
   return null;
 }
 
+async function safePublishStatus(item) {
+  if (!item || typeof item.getPublishStatusAsync !== 'function') return 'UNPUBLISHED';
+  try {
+    return await item.getPublishStatusAsync();
+  } catch {
+    return 'UNPUBLISHED';
+  }
+}
+
+function summarisePublishStatuses(statuses) {
+  const summary = { CURRENT: 0, CHANGED: 0, UNPUBLISHED: 0 };
+  for (const status of statuses) {
+    if (status in summary) summary[status] += 1;
+    else summary.UNPUBLISHED += 1;
+  }
+  return summary;
+}
+
+async function currentLayerPublishStatus(layer) {
+  const definition = layerDefinition(layer);
+  if (!definition) throw new Error(`Unknown BufferCore Figma layer: ${layer}`);
+
+  const statuses = [];
+  const details = {
+    layer,
+    total: 0,
+    current: 0,
+    changed: 0,
+    unpublished: 0,
+    ready: false,
+    state: 'empty'
+  };
+
+  if (layer === 'foundations') {
+    const registry = readBindingRegistry();
+    const collections = await figma.variables.getLocalVariableCollectionsAsync();
+    const collectionsById = new Map(collections.map((collection) => [collection.id, collection]));
+
+    const checkedCollections = new Set();
+    for (const figmaId of Object.values(registry.variables || {})) {
+      let variable = null;
+      try { variable = await figma.variables.getVariableByIdAsync(figmaId); } catch {}
+      if (!variable || variable.remote) continue;
+
+      const collection = collectionsById.get(variable.variableCollectionId);
+      const publishable = !variable.hiddenFromPublishing && collection && !collection.hiddenFromPublishing;
+      if (!publishable) continue;
+
+      statuses.push(await safePublishStatus(variable));
+
+      if (!checkedCollections.has(collection.id)) {
+        checkedCollections.add(collection.id);
+        statuses.push(await safePublishStatus(collection));
+      }
+    }
+
+    for (const figmaId of Object.values(registry.styles || {})) {
+      let style = null;
+      try { style = await figma.getStyleByIdAsync?.(figmaId); } catch {}
+      if (!style || style.remote) continue;
+      statuses.push(await safePublishStatus(style));
+    }
+  } else {
+    const roots = await localComponentRoots();
+    for (const node of roots) {
+      if (!node || node.remote) continue;
+      statuses.push(await safePublishStatus(node));
+    }
+  }
+
+  const counts = summarisePublishStatuses(statuses);
+  details.total = statuses.length;
+  details.current = counts.CURRENT;
+  details.changed = counts.CHANGED;
+  details.unpublished = counts.UNPUBLISHED;
+
+  if (!details.total) {
+    details.state = 'empty';
+    details.ready = false;
+  } else if (details.unpublished > 0) {
+    details.state = 'unpublished';
+    details.ready = false;
+  } else if (details.changed > 0) {
+    details.state = 'changed';
+    details.ready = false;
+  } else {
+    details.state = 'current';
+    details.ready = details.current > 0;
+  }
+
+  return details;
+}
+
+function publishStatusMessage(status) {
+  if (!status?.total) return 'No publishable library assets found in this file.';
+  if (status.unpublished > 0) {
+    return `${status.unpublished} publishable item(s) have never been published. Publish this library in Figma first.`;
+  }
+  if (status.changed > 0) {
+    return `${status.changed} item(s) have unpublished changes. Publish the latest library changes in Figma first.`;
+  }
+  if (status.ready) {
+    return `Published and current · ${status.current} item(s) ready to register.`;
+  }
+  return 'This library is not ready to register.';
+}
+
+async function assertLayerPublishedCurrent(layer) {
+  const status = await currentLayerPublishStatus(layer);
+  if (!status.ready) throw new Error(publishStatusMessage(status));
+  return status;
+}
+
 async function publishedFoundationBindings() {
   const registry = readBindingRegistry();
   const variables = {};
   const styles = {};
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  const collectionsById = new Map(collections.map((collection) => [collection.id, collection]));
 
   for (const [canonicalId, figmaId] of Object.entries(registry.variables || {})) {
     try {
       const variable = await figma.variables.getVariableByIdAsync(figmaId);
-      if (variable?.key) variables[canonicalId] = { key: variable.key, name: variable.name };
+      const collection = variable ? collectionsById.get(variable.variableCollectionId) : null;
+      const publishable = variable && !variable.remote
+        && !variable.hiddenFromPublishing
+        && collection
+        && !collection.hiddenFromPublishing;
+      if (!publishable) continue;
+      if (await safePublishStatus(variable) !== 'CURRENT') continue;
+      variables[canonicalId] = { key: variable.key, name: variable.name };
     } catch {}
   }
 
   for (const [canonicalId, figmaId] of Object.entries(registry.styles || {})) {
     try {
       const style = await figma.getStyleByIdAsync?.(figmaId);
-      if (style?.key) styles[canonicalId] = { key: style.key, name: style.name, type: style.type || null };
+      if (!style || style.remote) continue;
+      if (await safePublishStatus(style) !== 'CURRENT') continue;
+      styles[canonicalId] = { key: style.key, name: style.name, type: style.type || null };
     } catch {}
   }
 
@@ -619,6 +771,7 @@ async function publishedFoundationBindings() {
 }
 
 async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
+  const publishStatus = await assertLayerPublishedCurrent(layer);
   const identity = setSystemIdentity({ layer, role, flavourId });
   const definition = layerDefinition(layer);
 
@@ -639,7 +792,7 @@ async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length };
+    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length, publishStatus };
   }
 
   if (role === 'flavour' && layer === 'foundations') {
@@ -663,7 +816,7 @@ async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
       method: 'POST',
       body: JSON.stringify(payload)
     });
-    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length };
+    return { ...identity, assets: 0, variables: Object.keys(bindings.variables).length, styles: Object.keys(bindings.styles).length, publishStatus };
   }
 
   const roots = await localComponentRoots();
@@ -1348,6 +1501,1661 @@ function stampLibraryTarget(manifest) {
   } catch {}
 }
 
+
+const PROJECT_THEME_KEYS = Object.freeze({
+  flavourId: 'buffercore.project.flavourId',
+  flavourName: 'buffercore.project.flavourName',
+  appliedAt: 'buffercore.project.appliedAt',
+  adapterCollection: 'buffercore.project.adapterCollection',
+  adapterVariable: 'buffercore.project.adapterVariable',
+  adapterStyle: 'buffercore.project.adapterStyle',
+  sourceCanonical: 'buffercore.project.sourceCanonical',
+  sourceStyleCanonical: 'buffercore.project.sourceStyleCanonical',
+  autoReconcile: 'buffercore.project.autoReconcile'
+});
+
+function normaliseFigmaName(value) {
+  return String(value || '').split('/').map((part) => part.trim()).join('/').replace(/\s+/g, ' ').trim();
+}
+
+function projectAutoReconcileEnabled() {
+  return figma.root.getPluginData(PROJECT_THEME_KEYS.autoReconcile) !== 'false';
+}
+
+function projectThemeIdentity() {
+  return {
+    flavourId: figma.root.getPluginData(PROJECT_THEME_KEYS.flavourId) || null,
+    flavourName: figma.root.getPluginData(PROJECT_THEME_KEYS.flavourName) || null,
+    appliedAt: figma.root.getPluginData(PROJECT_THEME_KEYS.appliedAt) || null,
+    autoReconcileEnabled: projectAutoReconcileEnabled()
+  };
+}
+
+function stampProjectTheme(manifest) {
+  const flavourId = manifest?.flavour?.id || manifest?.repository?.flavour || null;
+  const flavourName = manifest?.flavour?.displayName || manifest?.flavour?.name || flavourId;
+  if (!flavourId) throw new Error('A resolved Flavour manifest is required to theme a project file.');
+  figma.root.setPluginData(PROJECT_THEME_KEYS.flavourId, String(flavourId));
+  figma.root.setPluginData(PROJECT_THEME_KEYS.flavourName, String(flavourName || flavourId));
+  figma.root.setPluginData(PROJECT_THEME_KEYS.appliedAt, new Date().toISOString());
+  if (!figma.root.getPluginData(PROJECT_THEME_KEYS.autoReconcile)) {
+    figma.root.setPluginData(PROJECT_THEME_KEYS.autoReconcile, 'true');
+  }
+}
+
+async function localProjectAdapterCollections(flavourId) {
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  return collections.filter((collection) => (
+    collection.getPluginData(PROJECT_THEME_KEYS.adapterCollection) === flavourId
+  ));
+}
+
+async function removeExistingProjectThemeAdapter(flavourId) {
+  const styles = [
+    ...await figma.getLocalTextStylesAsync(),
+    ...await figma.getLocalEffectStylesAsync()
+  ];
+  for (const style of styles) {
+    if (style.getPluginData(PROJECT_THEME_KEYS.adapterStyle) !== flavourId) continue;
+    try { style.remove(); } catch {}
+  }
+
+  const variables = await figma.variables.getLocalVariablesAsync();
+  for (const variable of variables) {
+    if (variable.getPluginData(PROJECT_THEME_KEYS.adapterVariable) !== flavourId) continue;
+    try { variable.remove(); } catch {}
+  }
+
+  const collections = await localProjectAdapterCollections(flavourId);
+  for (const collection of collections) {
+    try { collection.remove(); } catch {}
+  }
+}
+
+function projectCanonicalIndexes(manifest) {
+  const byName = new Map();
+  const byCss = new Map();
+  for (const definition of manifest?.variables || []) {
+    for (const name of [definition.name, definition.figmaName]) {
+      const normalised = normaliseFigmaName(name);
+      if (normalised) byName.set(normalised, definition.id);
+    }
+    if (definition.cssVariable) byCss.set(definition.cssVariable, definition.id);
+  }
+  const styleByName = new Map((manifest?.styles || []).map((style) => [normaliseFigmaName(style.name), style.id]));
+  return { byName, byCss, styleByName };
+}
+
+function canonicalByPublishedKey(bindings = {}) {
+  const result = new Map();
+  for (const [canonicalId, item] of Object.entries(bindings || {})) {
+    if (item?.key) result.set(item.key, canonicalId);
+  }
+  return result;
+}
+
+async function projectSourceVariableCanonical(alias, indexes, sourceFamilies = []) {
+  if (!alias?.id) return null;
+  let source = null;
+  try { source = await figma.variables.getVariableByIdAsync(alias.id); } catch {}
+  if (!source) return null;
+
+  for (const family of sourceFamilies) {
+    const canonical = family.variableKeyToCanonical?.get(source.key);
+    if (canonical) return canonical;
+  }
+
+  const canonical = source.getPluginData?.(BUFFERCORE_KEYS.variableId);
+  if (canonical) return canonical;
+
+  const webSyntax = source.codeSyntax?.WEB || null;
+  if (webSyntax) {
+    const match = String(webSyntax).match(/var\((--[^)]+)\)/);
+    if (match && indexes.byCss.has(match[1])) return indexes.byCss.get(match[1]);
+  }
+
+  return indexes.byName.get(normaliseFigmaName(source.name)) || null;
+}
+
+async function projectSourceStyleCanonical(styleId, indexes, sourceFamilies = []) {
+  if (!styleId || styleId === figma.mixed) return null;
+  let style = null;
+  try { style = await figma.getStyleByIdAsync?.(styleId); } catch {}
+  if (!style) return null;
+
+  for (const family of sourceFamilies) {
+    const canonical = family.styleKeyToCanonical?.get(style.key);
+    if (canonical) return canonical;
+  }
+
+  const canonical = style.getPluginData?.(BUFFERCORE_KEYS.styleId);
+  if (canonical) return canonical;
+
+  return indexes.styleByName.get(normaliseFigmaName(style.name)) || null;
+}
+
+
+function contextDomain(manifest, domainId) {
+  return manifest?.contextContracts?.domains?.[domainId] || null;
+}
+
+function contextTargetMappings(domain, targetId) {
+  if (!domain) return null;
+  if (targetId === 'context') {
+    return Object.fromEntries(
+      Object.entries(domain.slots || {}).map(([cssVariable]) => [cssVariable, cssVariable])
+    );
+  }
+  return domain.targets?.[targetId]?.mappings || null;
+}
+
+function buildContextRemapCssPlan(manifest, domainId, sourceTargetId, destinationTargetId) {
+  const domain = contextDomain(manifest, domainId);
+  if (!domain) throw new Error(`Unknown Context domain: ${domainId}.`);
+
+  const sourceMappings = contextTargetMappings(domain, sourceTargetId);
+  const destinationMappings = contextTargetMappings(domain, destinationTargetId);
+  if (!sourceMappings) throw new Error(`Unknown Context source target: ${sourceTargetId}.`);
+  if (!destinationMappings) throw new Error(`Unknown Context destination target: ${destinationTargetId}.`);
+
+  const sourceCssToSlots = new Map();
+  for (const slotCss of Object.keys(domain.slots || {})) {
+    const sourceCss = sourceMappings[slotCss];
+    if (!sourceCss) continue;
+    if (!sourceCssToSlots.has(sourceCss)) sourceCssToSlots.set(sourceCss, []);
+    sourceCssToSlots.get(sourceCss).push(slotCss);
+  }
+
+  const mappings = {};
+  const ambiguous = [];
+  const missing = [];
+
+  for (const [sourceCss, slots] of sourceCssToSlots.entries()) {
+    const destinations = [...new Set(
+      slots.map((slotCss) => destinationMappings[slotCss]).filter(Boolean)
+    )];
+
+    if (!destinations.length) {
+      missing.push({ sourceCss, slots });
+      continue;
+    }
+
+    if (destinations.length > 1) {
+      ambiguous.push({ sourceCss, slots, destinations });
+      continue;
+    }
+
+    const destinationCss = destinations[0];
+    if (sourceCss !== destinationCss) mappings[sourceCss] = destinationCss;
+  }
+
+  return {
+    domainId,
+    sourceTargetId,
+    destinationTargetId,
+    mappings,
+    ambiguous,
+    missing
+  };
+}
+
+function buildContextRemapCanonicalPlan(manifest, domainId, sourceTargetId, destinationTargetId) {
+  const cssPlan = buildContextRemapCssPlan(manifest, domainId, sourceTargetId, destinationTargetId);
+  const byCss = new Map((manifest?.variables || [])
+    .filter((item) => item?.cssVariable && item?.id)
+    .map((item) => [item.cssVariable, item.id]));
+
+  const mappings = {};
+  const unavailable = [];
+
+  for (const [sourceCss, destinationCss] of Object.entries(cssPlan.mappings)) {
+    const sourceCanonical = byCss.get(sourceCss);
+    const destinationCanonical = byCss.get(destinationCss);
+    if (!sourceCanonical || !destinationCanonical) {
+      unavailable.push({
+        sourceCss,
+        destinationCss,
+        sourceCanonical: sourceCanonical || null,
+        destinationCanonical: destinationCanonical || null
+      });
+      continue;
+    }
+    mappings[sourceCanonical] = destinationCanonical;
+  }
+
+  return { ...cssPlan, mappings, unavailable };
+}
+
+function availableFigmaContextDomains(manifest) {
+  const emittedCss = new Set((manifest?.variables || []).map((item) => item?.cssVariable).filter(Boolean));
+  const result = [];
+
+  for (const [domainId, domain] of Object.entries(manifest?.contextContracts?.domains || {})) {
+    const emittedSlots = Object.keys(domain.slots || {}).filter((cssVariable) => emittedCss.has(cssVariable));
+    const availableTargets = Object.entries(domain.targets || {}).filter(([, target]) => (
+      emittedSlots.some((slotCss) => emittedCss.has(target.mappings?.[slotCss]))
+    ));
+
+    if (!emittedSlots.length || !availableTargets.length) continue;
+
+    result.push({
+      id: domainId,
+      label: domainId.charAt(0).toUpperCase() + domainId.slice(1),
+      slotCount: emittedSlots.length,
+      targets: [
+        { id: 'context', label: 'Context' },
+        ...availableTargets.map(([id, target]) => ({ id, label: target.label || id }))
+      ]
+    });
+  }
+
+  return result;
+}
+
+
+async function collectSelectionCanonicalBindings(node, indexes, sourceFamilies, counts) {
+  const recordAlias = async (alias) => {
+    const canonicalId = await projectSourceVariableCanonical(alias, indexes, sourceFamilies);
+    if (!canonicalId) return;
+    counts.set(canonicalId, (counts.get(canonicalId) || 0) + 1);
+  };
+
+  for (const aliasOrAliases of Object.values(node?.boundVariables || {})) {
+    const aliases = Array.isArray(aliasOrAliases) ? aliasOrAliases : [aliasOrAliases];
+    for (const alias of aliases) await recordAlias(alias);
+  }
+
+  for (const paints of [node?.fills, node?.strokes]) {
+    if (paints === figma.mixed || !Array.isArray(paints)) continue;
+    for (const paint of paints) {
+      for (const alias of Object.values(paint?.boundVariables || {})) await recordAlias(alias);
+    }
+  }
+
+  if (node?.effects !== figma.mixed && Array.isArray(node?.effects)) {
+    for (const effect of node.effects) {
+      for (const alias of Object.values(effect?.boundVariables || {})) await recordAlias(alias);
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      await collectSelectionCanonicalBindings(child, indexes, sourceFamilies, counts);
+    }
+  }
+}
+
+function contextTargetCanonicalIds(manifest, domainId, targetId) {
+  const domain = contextDomain(manifest, domainId);
+  if (!domain) return new Set();
+
+  const cssMappings = contextTargetMappings(domain, targetId);
+  if (!cssMappings) return new Set();
+
+  const byCss = new Map((manifest?.variables || [])
+    .filter((item) => item?.cssVariable && item?.id)
+    .map((item) => [item.cssVariable, item.id]));
+
+  return new Set(
+    Object.values(cssMappings)
+      .map((cssVariable) => byCss.get(cssVariable))
+      .filter(Boolean)
+  );
+}
+
+async function detectSelectionContextTargets(manifest) {
+  const selection = [...(figma.currentPage.selection || [])];
+  if (!selection.length) {
+    return { selectionCount: 0, domains: {} };
+  }
+
+  const family = await familyState(manifest?.flavour?.id || null);
+  const foundations = [
+    family?.layers?.foundations?.master,
+    family?.layers?.foundations?.flavour
+  ].filter(Boolean);
+
+  const sourceFamilies = foundations.map((item) => ({
+    variableKeyToCanonical: canonicalByPublishedKey(item.bindings?.variables),
+    styleKeyToCanonical: canonicalByPublishedKey(item.bindings?.styles)
+  }));
+
+  const indexes = projectCanonicalIndexes(manifest);
+  const counts = new Map();
+
+  for (const node of selection) {
+    await collectSelectionCanonicalBindings(node, indexes, sourceFamilies, counts);
+  }
+
+  const domains = {};
+
+  for (const [domainId, domain] of Object.entries(manifest?.contextContracts?.domains || {})) {
+    const candidates = [
+      { id: 'context', label: 'Context' },
+      ...Object.entries(domain.targets || {}).map(([id, target]) => ({
+        id,
+        label: target.label || id
+      }))
+    ];
+
+    const scored = candidates.map((candidate) => {
+      const ids = contextTargetCanonicalIds(manifest, domainId, candidate.id);
+      let score = 0;
+      let matchedTokens = 0;
+      for (const canonicalId of ids) {
+        const count = counts.get(canonicalId) || 0;
+        if (count) {
+          score += count;
+          matchedTokens += 1;
+        }
+      }
+      return { ...candidate, score, matchedTokens };
+    }).filter((item) => item.score > 0);
+
+    scored.sort((a, b) => b.score - a.score || b.matchedTokens - a.matchedTokens);
+
+    if (!scored.length) {
+      domains[domainId] = { status: 'none', targetId: null, label: null, score: 0 };
+      continue;
+    }
+
+    const top = scored[0];
+    const tied = scored.filter((item) => item.score === top.score && item.matchedTokens === top.matchedTokens);
+
+    domains[domainId] = tied.length === 1
+      ? { status: 'detected', targetId: top.id, label: top.label, score: top.score, matchedTokens: top.matchedTokens }
+      : { status: 'mixed', targetId: null, label: 'Mixed', score: top.score, matchedTokens: top.matchedTokens };
+  }
+
+  return {
+    selectionCount: selection.length,
+    bindingCount: [...counts.values()].reduce((sum, count) => sum + count, 0),
+    domains
+  };
+}
+
+async function buildCoreContextRemapRuntime(manifest, domainId, sourceTargetId, destinationTargetId) {
+  const plan = buildContextRemapCanonicalPlan(manifest, domainId, sourceTargetId, destinationTargetId);
+  const family = await familyState();
+  const masterFoundations = family?.layers?.foundations?.master;
+
+  if (!masterFoundations) {
+    throw new Error('BC: Foundations must be published and registered before Context Remap can import target variables.');
+  }
+
+  return {
+    plan,
+    indexes: projectCanonicalIndexes(manifest),
+    sourceFamilies: [{
+      variableKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.variables),
+      styleKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.styles)
+    }],
+    masterFoundations,
+    importedVariables: new Map()
+  };
+}
+
+async function coreContextTargetVariable(canonicalId, runtime, report) {
+  if (runtime.importedVariables.has(canonicalId)) return runtime.importedVariables.get(canonicalId);
+
+  const item = runtime.masterFoundations.bindings?.variables?.[canonicalId];
+  if (!item?.key) {
+    report.unresolved += 1;
+    return null;
+  }
+
+  try {
+    const variable = await figma.variables.importVariableByKeyAsync(item.key);
+    runtime.importedVariables.set(canonicalId, variable);
+    report.variablesImported += 1;
+    return variable;
+  } catch (error) {
+    report.errors.push(`${canonicalId}: ${serialiseError(error)}`);
+    return null;
+  }
+}
+
+async function coreContextMappedVariable(alias, runtime, report) {
+  const canonicalId = await projectSourceVariableCanonical(alias, runtime.indexes, runtime.sourceFamilies);
+  if (!canonicalId) return null;
+
+  const targetCanonical = runtime.plan.mappings[canonicalId];
+  if (!targetCanonical) return null;
+
+  return coreContextTargetVariable(targetCanonical, runtime, report);
+}
+
+async function remapContextPaints(paints, runtime, report) {
+  if (paints === figma.mixed || !Array.isArray(paints)) return paints;
+  const result = [];
+
+  for (const paint of paints) {
+    let next = paint;
+    for (const [field, alias] of Object.entries(paint?.boundVariables || {})) {
+      const target = await coreContextMappedVariable(alias, runtime, report);
+      if (!target) continue;
+      try {
+        next = figma.variables.setBoundVariableForPaint(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+
+  return result;
+}
+
+async function remapContextEffects(effects, runtime, report) {
+  if (effects === figma.mixed || !Array.isArray(effects)) return effects;
+  const result = [];
+
+  for (const effect of effects) {
+    let next = effect;
+    for (const [field, alias] of Object.entries(effect?.boundVariables || {})) {
+      const target = await coreContextMappedVariable(alias, runtime, report);
+      if (!target) continue;
+      try {
+        next = figma.variables.setBoundVariableForEffect(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+
+  return result;
+}
+
+async function remapContextNode(node, runtime, report) {
+  report.nodesScanned += 1;
+
+  if (node.boundVariables && typeof node.setBoundVariable === 'function') {
+    for (const [field, aliasOrAliases] of Object.entries(node.boundVariables)) {
+      const aliases = Array.isArray(aliasOrAliases) ? aliasOrAliases : [aliasOrAliases];
+      for (const alias of aliases) {
+        const target = await coreContextMappedVariable(alias, runtime, report);
+        if (!target) continue;
+
+        try {
+          node.setBoundVariable(field, target);
+          report.rebound += 1;
+        } catch (error) {
+          report.errors.push(serialiseError(error));
+        }
+        break;
+      }
+    }
+  }
+
+  if ('fills' in node) {
+    try { node.fills = await remapContextPaints(node.fills, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('strokes' in node) {
+    try { node.strokes = await remapContextPaints(node.strokes, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('effects' in node) {
+    try { node.effects = await remapContextEffects(node.effects, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      await remapContextNode(child, runtime, report);
+    }
+  }
+}
+
+async function remapContextSelection(manifest, domainId, sourceTargetId, destinationTargetId) {
+  const selection = [...(figma.currentPage.selection || [])];
+  if (!selection.length) throw new Error('Select at least one object or component before remapping Context.');
+
+  if (sourceTargetId === destinationTargetId) {
+    throw new Error('Choose different source and destination Context targets.');
+  }
+
+  const runtime = await buildCoreContextRemapRuntime(manifest, domainId, sourceTargetId, destinationTargetId);
+  const report = {
+    nodesScanned: 0,
+    rebound: 0,
+    variablesImported: 0,
+    unresolved: 0,
+    ambiguousMappings: runtime.plan.ambiguous.length,
+    unavailableMappings: runtime.plan.unavailable.length,
+    errors: []
+  };
+
+  for (const node of selection) {
+    await remapContextNode(node, runtime, report);
+  }
+
+  return {
+    domainId,
+    sourceTargetId,
+    destinationTargetId,
+    selectionCount: selection.length,
+    mappingCount: Object.keys(runtime.plan.mappings).length,
+    plan: {
+      ambiguous: runtime.plan.ambiguous,
+      unavailable: runtime.plan.unavailable,
+      missing: runtime.plan.missing
+    },
+    report: {
+      ...report,
+      errors: [...new Set(report.errors)].slice(0, 20)
+    }
+  };
+}
+
+
+function contextTargetLabel(manifest, domainId, targetId) {
+  if (targetId === 'context') return 'Context';
+  const domain = contextDomain(manifest, domainId);
+  const target = domain?.targets?.[targetId];
+  if (target?.label) return target.label;
+  return String(targetId || '').replace(/(^|[-_\s])([a-z])/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`);
+}
+
+function contextSetGeneratedName(originalName, targetLabel) {
+  const base = String(originalName || 'Untitled').replace(/\s+\/\s+(Context|Neutral|Primary|Secondary|Accent|Success|Warning|Error|Info)$/i, '');
+  return `${base} / ${targetLabel}`;
+}
+
+function canPositionGeneratedSibling(node) {
+  const parent = node?.parent;
+  if (!parent || parent.type === 'DOCUMENT' || parent.type === 'PAGE') return true;
+  if ('layoutMode' in parent && parent.layoutMode && parent.layoutMode !== 'NONE') return false;
+  return true;
+}
+
+function positionGeneratedSibling(original, clone, index, gap = 24) {
+  if (!canPositionGeneratedSibling(clone)) return;
+  if (!('x' in original) || !('y' in original) || !('x' in clone) || !('y' in clone)) return;
+
+  const width = Number(original.width) || 0;
+  try {
+    clone.x = original.x + ((width + gap) * index);
+    clone.y = original.y;
+  } catch {}
+}
+
+
+const BUFFERCORE_STATE_KEYS = Object.freeze({
+  appliedState: 'buffercore.appliedState'
+});
+
+function stateSemanticCanonicalId(manifest, stateId) {
+  if (stateId === 'disabled') {
+    return (manifest?.variables || []).find(
+      (item) => item?.cssVariable === '--bc-interaction-disabled-opacity'
+    )?.id || null;
+  }
+  return null;
+}
+
+async function buildStateTransformRuntime(manifest, stateIds = []) {
+  const requested = [...new Set((stateIds || []).filter(Boolean))]
+    .filter((stateId) => stateId !== 'default');
+
+  const runtime = {
+    requested,
+    variables: new Map(),
+    foundationBindings: null
+  };
+
+  if (!requested.length) return runtime;
+
+  for (const stateId of requested) {
+    if (!stateSemanticCanonicalId(manifest, stateId)) {
+      throw new Error(`The active Foundation manifest does not expose the ${stateId} state semantic.`);
+    }
+  }
+
+  const activeProject = projectThemeIdentity();
+  if (activeProject?.flavourId) {
+    try {
+      const flavourFamily = await familyState(activeProject.flavourId);
+      const flavourFoundations = flavourFamily?.layers?.foundations?.flavour;
+      if (flavourFoundations) runtime.foundationBindings = flavourFoundations;
+    } catch {}
+  }
+
+  if (!runtime.foundationBindings) {
+    const family = await familyState();
+    runtime.foundationBindings = family?.layers?.foundations?.master || null;
+  }
+
+  if (!runtime.foundationBindings) {
+    throw new Error('A published and registered BufferCore Foundations library is required before applying generated states.');
+  }
+
+  for (const stateId of requested) {
+    const canonicalId = stateSemanticCanonicalId(manifest, stateId);
+    if (!runtime.foundationBindings.bindings?.variables?.[canonicalId]?.key) {
+      throw new Error(
+        `The current Foundation build contains ${stateId}, but the registered published Foundations library is out of date. `
+        + `Rebuild BC: Foundations, publish it in Figma, then register Master Foundations again.`
+      );
+    }
+  }
+
+  return runtime;
+}
+
+async function stateTransformVariable(manifest, stateId, runtime, report) {
+  if (runtime.variables.has(stateId)) return runtime.variables.get(stateId);
+
+  const canonicalId = stateSemanticCanonicalId(manifest, stateId);
+  const item = runtime.foundationBindings?.bindings?.variables?.[canonicalId];
+
+  if (!canonicalId || !item?.key) {
+    report.unresolved += 1;
+    return null;
+  }
+
+  try {
+    const variable = await figma.variables.importVariableByKeyAsync(item.key);
+    runtime.variables.set(stateId, variable);
+    report.variablesImported += 1;
+    return variable;
+  } catch (error) {
+    report.errors.push(`${stateId}: ${serialiseError(error)}`);
+    return null;
+  }
+}
+
+async function applyStateTransform(node, manifest, stateId, runtime, report) {
+  if (!stateId || stateId === 'default') return true;
+
+  if (stateId === 'disabled') {
+    const variable = await stateTransformVariable(manifest, stateId, runtime, report);
+    if (!variable) return false;
+
+    if (typeof node?.setBoundVariable !== 'function') {
+      report.errors.push(`${node?.name || node?.type || 'Selection'}: opacity cannot be variable-bound.`);
+      return false;
+    }
+
+    try {
+      node.setBoundVariable('opacity', variable);
+      node.setPluginData?.(BUFFERCORE_STATE_KEYS.appliedState, 'disabled');
+      report.stateBindings += 1;
+      return true;
+    } catch (error) {
+      report.errors.push(`${node?.name || node?.type || 'Selection'}: ${serialiseError(error)}`);
+      return false;
+    }
+  }
+
+  report.errors.push(`Unknown generated state: ${stateId}.`);
+  return false;
+}
+
+function generatedStateLabel(stateId) {
+  return stateId === 'disabled' ? 'Disabled' : 'Default';
+}
+
+function disabledCopyName(originalName) {
+  const base = String(originalName || 'Untitled').replace(/\s+\/\s+Disabled$/i, '');
+  return `${base} / Disabled`;
+}
+
+async function generateDisabledCopies(manifest, options = {}) {
+  const selection = [...(figma.currentPage.selection || [])];
+  if (!selection.length) throw new Error('Select at least one object or component before creating a Disabled copy.');
+
+  const stateRuntime = await buildStateTransformRuntime(manifest, ['disabled']);
+  const generated = [];
+  const report = {
+    sourceCount: selection.length,
+    generatedCount: 0,
+    stateBindings: 0,
+    variablesImported: 0,
+    unresolved: 0,
+    errors: []
+  };
+
+  for (const original of selection) {
+    if (typeof original.clone !== 'function') {
+      report.errors.push(`${original.name || original.type}: this node cannot be cloned.`);
+      continue;
+    }
+
+    let clone;
+    try {
+      clone = original.clone();
+      clone.name = disabledCopyName(original.name);
+      positionGeneratedSibling(original, clone, 1);
+    } catch (error) {
+      report.errors.push(`${original.name || original.type}: ${serialiseError(error)}`);
+      try { clone?.remove(); } catch {}
+      continue;
+    }
+
+    const applied = await applyStateTransform(clone, manifest, 'disabled', stateRuntime, report);
+    if (!applied) {
+      try { clone.remove(); } catch {}
+      continue;
+    }
+
+    generated.push(clone);
+    report.generatedCount += 1;
+  }
+
+  if (generated.length) {
+    try { figma.currentPage.selection = generated; } catch {}
+    if (options.focusResults !== false) {
+      try { figma.viewport.scrollAndZoomIntoView(generated); } catch {}
+    }
+  }
+
+  return {
+    stateId: 'disabled',
+    report: {
+      ...report,
+      errors: [...new Set(report.errors)].slice(0, 30)
+    }
+  };
+}
+
+
+async function generateContextSet(manifest, domainId, sourceTargetId, destinationTargetIds, options = {}) {
+  const selection = [...(figma.currentPage.selection || [])];
+  if (!selection.length) throw new Error('Select at least one object or component before generating a Context set.');
+
+  const targets = [...new Set((destinationTargetIds || []).filter(Boolean))]
+    .filter((targetId) => targetId !== sourceTargetId);
+
+  if (!targets.length) throw new Error('Choose at least one destination Context target.');
+
+  const stateIds = [...new Set((options.stateIds || ['default']).filter(Boolean))];
+  if (!stateIds.length) throw new Error('Choose at least one generated state.');
+
+  const supportedStateIds = new Set(['default', 'disabled']);
+  for (const stateId of stateIds) {
+    if (!supportedStateIds.has(stateId)) throw new Error(`Unknown generated state: ${stateId}.`);
+  }
+
+  const domain = contextDomain(manifest, domainId);
+  if (!domain) throw new Error(`Unknown Context domain: ${domainId}.`);
+
+  for (const targetId of targets) {
+    buildContextRemapCanonicalPlan(manifest, domainId, sourceTargetId, targetId);
+  }
+
+  const stateRuntime = await buildStateTransformRuntime(manifest, stateIds);
+
+  const generated = [];
+  const totals = {
+    sourceCount: selection.length,
+    generatedCount: 0,
+    nodesScanned: 0,
+    rebound: 0,
+    stateBindings: 0,
+    variablesImported: 0,
+    unresolved: 0,
+    ambiguousMappings: 0,
+    unavailableMappings: 0,
+    errors: []
+  };
+
+  for (const original of selection) {
+    let generatedIndex = 1;
+
+    for (const targetId of targets) {
+      const targetLabel = contextTargetLabel(manifest, domainId, targetId);
+
+      let remapRuntime;
+      try {
+        remapRuntime = await buildCoreContextRemapRuntime(manifest, domainId, sourceTargetId, targetId);
+      } catch (error) {
+        totals.errors.push(`${targetLabel}: ${serialiseError(error)}`);
+        continue;
+      }
+
+      for (const stateId of stateIds) {
+        if (typeof original.clone !== 'function') {
+          totals.errors.push(`${original.name || original.type}: this node cannot be cloned.`);
+          continue;
+        }
+
+        let clone;
+        try {
+          clone = original.clone();
+        } catch (error) {
+          totals.errors.push(`${original.name || original.type}: ${serialiseError(error)}`);
+          continue;
+        }
+
+        try {
+          const defaultName = contextSetGeneratedName(original.name, targetLabel);
+          clone.name = stateId === 'disabled'
+            ? `${defaultName} / ${generatedStateLabel(stateId)}`
+            : defaultName;
+        } catch {}
+
+        positionGeneratedSibling(original, clone, generatedIndex);
+        generatedIndex += 1;
+
+        try {
+          const report = {
+            nodesScanned: 0,
+            rebound: 0,
+            stateBindings: 0,
+            variablesImported: 0,
+            unresolved: 0,
+            ambiguousMappings: remapRuntime.plan.ambiguous.length,
+            unavailableMappings: remapRuntime.plan.unavailable.length,
+            errors: []
+          };
+
+          await remapContextNode(clone, remapRuntime, report);
+
+          const stateApplied = await applyStateTransform(
+            clone,
+            manifest,
+            stateId,
+            stateRuntime,
+            report
+          );
+
+          if (!stateApplied) {
+            totals.errors.push(...report.errors);
+            try { clone.remove(); } catch {}
+            continue;
+          }
+
+          totals.nodesScanned += report.nodesScanned;
+          totals.rebound += report.rebound;
+          totals.stateBindings += report.stateBindings;
+          totals.variablesImported += report.variablesImported;
+          totals.unresolved += report.unresolved;
+          totals.ambiguousMappings += report.ambiguousMappings;
+          totals.unavailableMappings += report.unavailableMappings;
+          totals.errors.push(...report.errors);
+
+          generated.push(clone);
+          totals.generatedCount += 1;
+        } catch (error) {
+          totals.errors.push(`${targetLabel} / ${generatedStateLabel(stateId)}: ${serialiseError(error)}`);
+          try { clone.remove(); } catch {}
+        }
+      }
+    }
+  }
+
+  if (generated.length) {
+    try { figma.currentPage.selection = generated; } catch {}
+    if (options.focusResults !== false) {
+      try { figma.viewport.scrollAndZoomIntoView(generated); } catch {}
+    }
+  }
+
+  return {
+    domainId,
+    sourceTargetId,
+    targetIds: targets,
+    stateIds,
+    targets: targets.map((id) => ({ id, label: contextTargetLabel(manifest, domainId, id) })),
+    states: stateIds.map((id) => ({ id, label: generatedStateLabel(id) })),
+    report: {
+      ...totals,
+      errors: [...new Set(totals.errors)].slice(0, 30)
+    }
+  };
+}
+
+
+function resolvedFlavourExtension(manifest, extensionId) {
+  return (manifest?.flavour?.extensions || []).find((item) => item?.id === extensionId) || null;
+}
+
+function availableFlavourExtensions(manifest) {
+  const emittedIds = new Set((manifest?.variables || []).map((item) => item?.id).filter(Boolean));
+
+  return (manifest?.flavour?.extensions || []).map((extension) => {
+    const usableMappings = (extension.mappings || []).filter((mapping) => (
+      mapping?.context?.id
+      && mapping?.target?.id
+      && emittedIds.has(mapping.context.id)
+      && emittedIds.has(mapping.target.id)
+    ));
+
+    return {
+      id: extension.id,
+      label: extension.label || extension.id,
+      description: extension.description || '',
+      domains: extension.domains || [...new Set(usableMappings.map((mapping) => mapping.domain).filter(Boolean))],
+      mappingCount: extension.mappingCount ?? extension.mappings?.length ?? 0,
+      usableMappingCount: usableMappings.length
+    };
+  }).filter((extension) => extension.usableMappingCount > 0);
+}
+
+function buildFlavourExtensionPlan(manifest, extensionId, direction = 'apply') {
+  const extension = resolvedFlavourExtension(manifest, extensionId);
+  if (!extension) throw new Error(`Unknown Flavour Extension: ${extensionId}.`);
+
+  const emittedIds = new Set((manifest?.variables || []).map((item) => item?.id).filter(Boolean));
+  const mappings = {};
+  const unavailable = [];
+
+  for (const mapping of extension.mappings || []) {
+    const contextCanonical = mapping?.context?.id;
+    const targetCanonical = mapping?.target?.id;
+    if (!contextCanonical || !targetCanonical) continue;
+
+    if (!emittedIds.has(contextCanonical) || !emittedIds.has(targetCanonical)) {
+      unavailable.push({
+        domain: mapping.domain || null,
+        contextCanonical,
+        targetCanonical
+      });
+      continue;
+    }
+
+    if (direction === 'reset') mappings[targetCanonical] = contextCanonical;
+    else mappings[contextCanonical] = targetCanonical;
+  }
+
+  return {
+    extensionId: extension.id,
+    extensionLabel: extension.label || extension.id,
+    direction,
+    mappings,
+    unavailable
+  };
+}
+
+async function buildFlavourExtensionRuntime(manifest, extensionId, direction) {
+  const flavourId = manifest?.flavour?.id;
+  if (!flavourId) throw new Error('Resolve a Flavour manifest before using Extensions.');
+
+  const activeProject = projectThemeIdentity();
+  if (activeProject.flavourId !== flavourId) {
+    throw new Error(`Apply ${manifest.flavour.displayName || flavourId} to this project before using its Extensions.`);
+  }
+
+  const family = await familyState(flavourId);
+  const flavourFoundations = family?.layers?.foundations?.flavour;
+  const masterFoundations = family?.layers?.foundations?.master;
+
+  if (!flavourFoundations) {
+    throw new Error(`The published ${manifest.flavour.displayName || flavourId} Foundations library is not registered.`);
+  }
+
+  const sourceFamilies = [];
+  if (masterFoundations) {
+    sourceFamilies.push({
+      variableKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.variables),
+      styleKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.styles)
+    });
+  }
+  sourceFamilies.push({
+    variableKeyToCanonical: canonicalByPublishedKey(flavourFoundations.bindings?.variables),
+    styleKeyToCanonical: canonicalByPublishedKey(flavourFoundations.bindings?.styles)
+  });
+
+  return {
+    plan: buildFlavourExtensionPlan(manifest, extensionId, direction),
+    indexes: projectCanonicalIndexes(manifest),
+    sourceFamilies,
+    targetFoundations: flavourFoundations,
+    importedVariables: new Map()
+  };
+}
+
+async function flavourExtensionTargetVariable(canonicalId, runtime, report) {
+  if (runtime.importedVariables.has(canonicalId)) return runtime.importedVariables.get(canonicalId);
+
+  const item = runtime.targetFoundations?.bindings?.variables?.[canonicalId];
+  if (!item?.key) {
+    report.unresolved += 1;
+    return null;
+  }
+
+  try {
+    const variable = await figma.variables.importVariableByKeyAsync(item.key);
+    runtime.importedVariables.set(canonicalId, variable);
+    report.variablesImported += 1;
+    return variable;
+  } catch (error) {
+    report.errors.push(`${canonicalId}: ${serialiseError(error)}`);
+    return null;
+  }
+}
+
+async function flavourExtensionMappedVariable(alias, runtime, report) {
+  const canonicalId = await projectSourceVariableCanonical(alias, runtime.indexes, runtime.sourceFamilies);
+  if (!canonicalId) return null;
+
+  const targetCanonical = runtime.plan.mappings[canonicalId];
+  if (!targetCanonical) return null;
+
+  return flavourExtensionTargetVariable(targetCanonical, runtime, report);
+}
+
+async function remapFlavourExtensionPaints(paints, runtime, report) {
+  if (paints === figma.mixed || !Array.isArray(paints)) return paints;
+  const result = [];
+
+  for (const paint of paints) {
+    let next = paint;
+    for (const [field, alias] of Object.entries(paint?.boundVariables || {})) {
+      const target = await flavourExtensionMappedVariable(alias, runtime, report);
+      if (!target) continue;
+      try {
+        next = figma.variables.setBoundVariableForPaint(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+
+  return result;
+}
+
+async function remapFlavourExtensionEffects(effects, runtime, report) {
+  if (effects === figma.mixed || !Array.isArray(effects)) return effects;
+  const result = [];
+
+  for (const effect of effects) {
+    let next = effect;
+    for (const [field, alias] of Object.entries(effect?.boundVariables || {})) {
+      const target = await flavourExtensionMappedVariable(alias, runtime, report);
+      if (!target) continue;
+      try {
+        next = figma.variables.setBoundVariableForEffect(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+
+  return result;
+}
+
+async function remapFlavourExtensionNode(node, runtime, report) {
+  report.nodesScanned += 1;
+
+  if (node.boundVariables && typeof node.setBoundVariable === 'function') {
+    for (const [field, aliasOrAliases] of Object.entries(node.boundVariables)) {
+      const aliases = Array.isArray(aliasOrAliases) ? aliasOrAliases : [aliasOrAliases];
+      for (const alias of aliases) {
+        const target = await flavourExtensionMappedVariable(alias, runtime, report);
+        if (!target) continue;
+        try {
+          node.setBoundVariable(field, target);
+          report.rebound += 1;
+        } catch (error) {
+          report.errors.push(serialiseError(error));
+        }
+        break;
+      }
+    }
+  }
+
+  if ('fills' in node) {
+    try { node.fills = await remapFlavourExtensionPaints(node.fills, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('strokes' in node) {
+    try { node.strokes = await remapFlavourExtensionPaints(node.strokes, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('effects' in node) {
+    try { node.effects = await remapFlavourExtensionEffects(node.effects, runtime, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) {
+      await remapFlavourExtensionNode(child, runtime, report);
+    }
+  }
+}
+
+async function applyFlavourExtensionToSelection(manifest, extensionId, direction = 'apply') {
+  const selection = [...(figma.currentPage.selection || [])];
+  if (!selection.length) throw new Error('Select at least one object or component before applying a Flavour Extension.');
+
+  const runtime = await buildFlavourExtensionRuntime(manifest, extensionId, direction);
+  const mappingCount = Object.keys(runtime.plan.mappings).length;
+  if (!mappingCount) {
+    throw new Error(`${runtime.plan.extensionLabel} has no Figma-variable mappings available in this Flavour Foundations library.`);
+  }
+
+  const report = {
+    nodesScanned: 0,
+    rebound: 0,
+    variablesImported: 0,
+    unresolved: 0,
+    unavailableMappings: runtime.plan.unavailable.length,
+    errors: []
+  };
+
+  for (const node of selection) {
+    await remapFlavourExtensionNode(node, runtime, report);
+  }
+
+  return {
+    flavourId: manifest.flavour.id,
+    extensionId: runtime.plan.extensionId,
+    extensionLabel: runtime.plan.extensionLabel,
+    direction,
+    selectionCount: selection.length,
+    mappingCount,
+    report: {
+      ...report,
+      errors: [...new Set(report.errors)].slice(0, 20)
+    }
+  };
+}
+
+async function buildProjectFoundationSwapContext(manifest) {
+  const flavourId = manifest?.flavour?.id || manifest?.repository?.flavour || null;
+  if (!flavourId) throw new Error('Choose and resolve a Flavour before applying it to a project.');
+
+  const family = await familyState(flavourId);
+  const masterFoundations = family?.layers?.foundations?.master;
+  const flavourFoundations = family?.layers?.foundations?.flavour;
+
+  if (!masterFoundations) {
+    throw new Error('BC: Foundations has not been registered. Register the published BC: Foundations library first.');
+  }
+  if (!flavourFoundations) {
+    throw new Error(`No published Foundations library is registered for ${flavourId}. Build the Flavour Foundations file, publish it, then register it.`);
+  }
+
+  const sourceFamilies = [{
+    variableKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.variables),
+    styleKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.styles)
+  }];
+
+  const currentFlavourId = projectThemeIdentity().flavourId;
+  if (currentFlavourId && currentFlavourId !== flavourId) {
+    try {
+      const currentFamily = await familyState(currentFlavourId);
+      const currentFoundations = currentFamily?.layers?.foundations?.flavour;
+      if (currentFoundations) {
+        sourceFamilies.push({
+          variableKeyToCanonical: canonicalByPublishedKey(currentFoundations.bindings?.variables),
+          styleKeyToCanonical: canonicalByPublishedKey(currentFoundations.bindings?.styles)
+        });
+      }
+    } catch {}
+  }
+
+  return {
+    flavourId,
+    masterFoundations,
+    flavourFoundations,
+    sourceFamilies,
+    indexes: projectCanonicalIndexes(manifest),
+    importedVariables: new Map(),
+    importedStyles: new Map()
+  };
+}
+
+async function projectTargetVariable(canonicalId, context, report) {
+  if (context.importedVariables.has(canonicalId)) return context.importedVariables.get(canonicalId);
+
+  const item = context.flavourFoundations.bindings?.variables?.[canonicalId];
+  if (!item?.key) {
+    report.unresolved += 1;
+    return null;
+  }
+
+  try {
+    const variable = await figma.variables.importVariableByKeyAsync(item.key);
+    context.importedVariables.set(canonicalId, variable);
+    report.variablesImported += 1;
+    return variable;
+  } catch (error) {
+    report.errors.push(`${canonicalId}: ${serialiseError(error)}`);
+    return null;
+  }
+}
+
+async function projectTargetStyle(canonicalId, context, report) {
+  if (context.importedStyles.has(canonicalId)) return context.importedStyles.get(canonicalId);
+
+  const item = context.flavourFoundations.bindings?.styles?.[canonicalId];
+  if (!item?.key) {
+    report.unresolved += 1;
+    return null;
+  }
+
+  try {
+    const style = await figma.importStyleByKeyAsync(item.key);
+    context.importedStyles.set(canonicalId, style);
+    report.stylesImported += 1;
+    return style;
+  } catch (error) {
+    report.errors.push(`${canonicalId}: ${serialiseError(error)}`);
+    return null;
+  }
+}
+
+async function swapProjectPaintBindings(paints, context, report) {
+  if (paints === figma.mixed || !Array.isArray(paints)) return paints;
+  const result = [];
+
+  for (const paint of paints) {
+    let next = paint;
+    for (const [field, alias] of Object.entries(paint?.boundVariables || {})) {
+      const canonicalId = await projectSourceVariableCanonical(alias, context.indexes, context.sourceFamilies);
+      if (!canonicalId) continue;
+
+      const target = await projectTargetVariable(canonicalId, context, report);
+      if (!target) continue;
+
+      try {
+        next = figma.variables.setBoundVariableForPaint(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+  return result;
+}
+
+async function swapProjectEffectBindings(effects, context, report) {
+  if (effects === figma.mixed || !Array.isArray(effects)) return effects;
+  const result = [];
+
+  for (const effect of effects) {
+    let next = effect;
+    for (const [field, alias] of Object.entries(effect?.boundVariables || {})) {
+      const canonicalId = await projectSourceVariableCanonical(alias, context.indexes, context.sourceFamilies);
+      if (!canonicalId) continue;
+
+      const target = await projectTargetVariable(canonicalId, context, report);
+      if (!target) continue;
+
+      try {
+        next = figma.variables.setBoundVariableForEffect(next, field, target);
+        report.rebound += 1;
+      } catch (error) {
+        report.errors.push(serialiseError(error));
+      }
+    }
+    result.push(next);
+  }
+  return result;
+}
+
+async function swapProjectNodeBindings(node, context, report) {
+  report.nodesScanned += 1;
+
+  if (node.boundVariables && typeof node.setBoundVariable === 'function') {
+    for (const [field, aliasOrAliases] of Object.entries(node.boundVariables)) {
+      const aliases = Array.isArray(aliasOrAliases) ? aliasOrAliases : [aliasOrAliases];
+      for (const alias of aliases) {
+        const canonicalId = await projectSourceVariableCanonical(alias, context.indexes, context.sourceFamilies);
+        if (!canonicalId) continue;
+
+        const target = await projectTargetVariable(canonicalId, context, report);
+        if (!target) continue;
+
+        try {
+          node.setBoundVariable(field, target);
+          report.rebound += 1;
+        } catch (error) {
+          report.errors.push(serialiseError(error));
+        }
+        break;
+      }
+    }
+  }
+
+  if ('fills' in node) {
+    try { node.fills = await swapProjectPaintBindings(node.fills, context, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('strokes' in node) {
+    try { node.strokes = await swapProjectPaintBindings(node.strokes, context, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+  if ('effects' in node) {
+    try { node.effects = await swapProjectEffectBindings(node.effects, context, report); }
+    catch (error) { report.errors.push(serialiseError(error)); }
+  }
+
+  const styleFields = [
+    ['fillStyleId', 'setFillStyleIdAsync'],
+    ['strokeStyleId', 'setStrokeStyleIdAsync'],
+    ['textStyleId', 'setTextStyleIdAsync'],
+    ['effectStyleId', 'setEffectStyleIdAsync'],
+    ['gridStyleId', 'setGridStyleIdAsync']
+  ];
+
+  for (const [field, setter] of styleFields) {
+    if (!(field in node) || !node[field] || node[field] === figma.mixed || typeof node[setter] !== 'function') continue;
+
+    const canonicalId = await projectSourceStyleCanonical(node[field], context.indexes, context.sourceFamilies);
+    if (!canonicalId) continue;
+
+    const target = await projectTargetStyle(canonicalId, context, report);
+    if (!target || target.id === node[field]) continue;
+
+    try {
+      await node[setter](target.id);
+      report.stylesRebound += 1;
+    } catch (error) {
+      report.errors.push(serialiseError(error));
+    }
+  }
+
+  if ('children' in node) {
+    for (const child of node.children) await swapProjectNodeBindings(child, context, report);
+  }
+}
+
+async function removeAnyGeneratedProjectThemeObjects() {
+  const variables = await figma.variables.getLocalVariablesAsync();
+  for (const variable of variables) {
+    if (!variable.getPluginData(PROJECT_THEME_KEYS.adapterVariable)) continue;
+    try { variable.remove(); } catch {}
+  }
+
+  const styles = [...await figma.getLocalTextStylesAsync(), ...await figma.getLocalEffectStylesAsync()];
+  for (const style of styles) {
+    if (!style.getPluginData(PROJECT_THEME_KEYS.adapterStyle)) continue;
+    try { style.remove(); } catch {}
+  }
+
+  const collections = await figma.variables.getLocalVariableCollectionsAsync();
+  for (const collection of collections) {
+    if (!collection.getPluginData(PROJECT_THEME_KEYS.adapterCollection)) continue;
+    try { collection.remove(); } catch {}
+  }
+}
+
+async function projectScopeRoots(scope) {
+  if (scope === 'selection') {
+    const selection = figma.currentPage.selection || [];
+    if (!selection.length) throw new Error('Select one or more frames/components before applying the Flavour to Selection.');
+    return [...selection];
+  }
+  if (scope === 'page') {
+    if (typeof figma.currentPage.loadAsync === 'function') await figma.currentPage.loadAsync();
+    return [...figma.currentPage.children];
+  }
+  if (scope === 'document') {
+    if (typeof figma.loadAllPagesAsync === 'function') await figma.loadAllPagesAsync();
+    return figma.root.children.flatMap((page) => [...page.children]);
+  }
+  throw new Error(`Unknown project Flavour scope: ${scope}`);
+}
+
+let autoReconcileManifest = null;
+let autoReconcileTimer = null;
+let autoReconcileBusy = false;
+let autoReconcileIgnoreUntil = 0;
+const autoReconcileNodeIds = new Set();
+const AUTO_RECONCILE_DEBOUNCE_MS = 350;
+const AUTO_RECONCILE_SELF_CHANGE_GUARD_MS = 650;
+
+function autoReconcileState() {
+  return {
+    enabled: projectAutoReconcileEnabled(),
+    armed: Boolean(autoReconcileManifest && projectThemeIdentity().flavourId),
+    queued: autoReconcileNodeIds.size,
+    busy: autoReconcileBusy
+  };
+}
+
+function postAutoReconcileState(extra = {}) {
+  try {
+    figma.ui.postMessage({
+      type: 'auto-reconcile-state',
+      payload: { ...autoReconcileState(), ...extra }
+    });
+  } catch {}
+}
+
+function armAutoReconcile(manifest) {
+  const manifestFlavour = manifest?.flavour?.id || manifest?.repository?.flavour || null;
+  const projectFlavour = projectThemeIdentity().flavourId;
+  if (!manifestFlavour || !projectFlavour || manifestFlavour !== projectFlavour) {
+    autoReconcileManifest = null;
+    postAutoReconcileState();
+    return;
+  }
+
+  autoReconcileManifest = manifest;
+  postAutoReconcileState();
+}
+
+function setProjectAutoReconcile(enabled, manifest = null) {
+  figma.root.setPluginData(PROJECT_THEME_KEYS.autoReconcile, enabled ? 'true' : 'false');
+  if (manifest) armAutoReconcile(manifest);
+  if (!enabled) {
+    autoReconcileNodeIds.clear();
+    if (autoReconcileTimer) clearTimeout(autoReconcileTimer);
+    autoReconcileTimer = null;
+  }
+  postAutoReconcileState();
+}
+
+function relevantAutoReconcileChange(change) {
+  if (!autoReconcileNodeId(change)) return false;
+  if (change.type === 'CREATE') return true;
+
+  if (change.type !== 'PROPERTY_CHANGE') return false;
+  const properties = Array.isArray(change.properties) ? change.properties : [];
+  if (!properties.length) return false;
+
+  const relevant = new Set([
+    'fills',
+    'strokes',
+    'effects',
+    'fillStyleId',
+    'strokeStyleId',
+    'textStyleId',
+    'effectStyleId',
+    'gridStyleId',
+    'mainComponent',
+    'componentProperties',
+    'boundVariables'
+  ]);
+
+  return properties.some((property) => relevant.has(String(property)));
+}
+
+function scheduleAutoReconcileNode(nodeId) {
+  if (!nodeId || !projectAutoReconcileEnabled() || !autoReconcileManifest) return;
+  autoReconcileNodeIds.add(nodeId);
+
+  if (autoReconcileTimer) clearTimeout(autoReconcileTimer);
+  autoReconcileTimer = setTimeout(() => {
+    autoReconcileTimer = null;
+    flushAutoReconcileQueue().catch((error) => {
+      postAutoReconcileState({ error: serialiseError(error) });
+    });
+  }, AUTO_RECONCILE_DEBOUNCE_MS);
+}
+
+function hasQueuedAncestor(node, queuedIds) {
+  let parent = node?.parent || null;
+  while (parent) {
+    if (queuedIds.has(parent.id)) return true;
+    parent = parent.parent || null;
+  }
+  return false;
+}
+
+async function queuedAutoReconcileRoots() {
+  const ids = [...autoReconcileNodeIds];
+  autoReconcileNodeIds.clear();
+
+  const nodes = [];
+  for (const id of ids) {
+    let node = null;
+    try { node = await figma.getNodeByIdAsync(id); } catch {}
+    if (!node || node.type === 'DOCUMENT' || node.type === 'PAGE') continue;
+    nodes.push(node);
+  }
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return nodes.filter((node) => !hasQueuedAncestor(node, nodeIds));
+}
+
+async function flushAutoReconcileQueue() {
+  if (autoReconcileBusy || !projectAutoReconcileEnabled() || !autoReconcileManifest) return;
+  if (!autoReconcileNodeIds.size) return;
+
+  autoReconcileBusy = true;
+  postAutoReconcileState();
+
+  try {
+    const roots = await queuedAutoReconcileRoots();
+    if (!roots.length) return;
+
+    const context = await buildProjectFoundationSwapContext(autoReconcileManifest);
+    const report = {
+      nodesScanned: 0,
+      rebound: 0,
+      stylesRebound: 0,
+      variablesImported: 0,
+      stylesImported: 0,
+      unresolved: 0,
+      errors: []
+    };
+
+    for (const root of roots) {
+      await swapProjectNodeBindings(root, context, report);
+    }
+
+    autoReconcileIgnoreUntil = Date.now() + AUTO_RECONCILE_SELF_CHANGE_GUARD_MS;
+
+    postAutoReconcileState({
+      lastRun: {
+        roots: roots.length,
+        nodesScanned: report.nodesScanned,
+        bindings: report.rebound + report.stylesRebound,
+        unresolved: report.unresolved,
+        errors: [...new Set(report.errors)].slice(0, 10)
+      }
+    });
+  } finally {
+    autoReconcileBusy = false;
+    postAutoReconcileState();
+
+    if (autoReconcileNodeIds.size && projectAutoReconcileEnabled()) {
+      if (autoReconcileTimer) clearTimeout(autoReconcileTimer);
+      autoReconcileTimer = setTimeout(() => {
+        autoReconcileTimer = null;
+        flushAutoReconcileQueue().catch((error) => {
+          postAutoReconcileState({ error: serialiseError(error) });
+        });
+      }, AUTO_RECONCILE_DEBOUNCE_MS);
+    }
+  }
+}
+
+let autoReconcileWatchedPage = null;
+
+function autoReconcileNodeId(change) {
+  return change?.node?.id || change?.id || null;
+}
+
+function handleAutoReconcilePageChange(event) {
+  if (!projectAutoReconcileEnabled() || !autoReconcileManifest || autoReconcileBusy) return;
+  if (Date.now() < autoReconcileIgnoreUntil) return;
+
+  for (const change of event.nodeChanges || []) {
+    if (!relevantAutoReconcileChange(change)) continue;
+    const nodeId = autoReconcileNodeId(change);
+    if (nodeId) scheduleAutoReconcileNode(nodeId);
+  }
+}
+
+function watchCurrentPageForAutoReconcile() {
+  const page = figma.currentPage;
+  if (!page || page === autoReconcileWatchedPage) return;
+
+  if (autoReconcileWatchedPage) {
+    try { autoReconcileWatchedPage.off('nodechange', handleAutoReconcilePageChange); } catch {}
+  }
+
+  autoReconcileWatchedPage = page;
+  try { autoReconcileWatchedPage.on('nodechange', handleAutoReconcilePageChange); } catch (error) {
+    postAutoReconcileState({ error: serialiseError(error) });
+  }
+}
+
+watchCurrentPageForAutoReconcile();
+
+figma.on('currentpagechange', () => {
+  watchCurrentPageForAutoReconcile();
+});
+
+async function applyProjectFlavour(manifest, scope = 'document') {
+  const context = await buildProjectFoundationSwapContext(manifest);
+  const roots = await projectScopeRoots(scope);
+
+  await removeAnyGeneratedProjectThemeObjects();
+
+  const report = {
+    nodesScanned: 0,
+    rebound: 0,
+    stylesRebound: 0,
+    variablesImported: 0,
+    stylesImported: 0,
+    unresolved: 0,
+    errors: []
+  };
+
+  for (const root of roots) await swapProjectNodeBindings(root, context, report);
+
+  stampProjectTheme(manifest);
+  armAutoReconcile(manifest);
+
+  return {
+    flavour: projectThemeIdentity(),
+    scope,
+    foundationLibrary: {
+      fileName: context.flavourFoundations.fileName,
+      registeredAt: context.flavourFoundations.registeredAt
+    },
+    adapter: {
+      createdCollections: 0,
+      updatedCollections: 0,
+      createdVariables: 0,
+      updatedVariables: 0,
+      createdStyles: 0,
+      updatedStyles: 0
+    },
+    report: {
+      ...report,
+      errors: [...new Set(report.errors)].slice(0, 20)
+    }
+  };
+}
+
+async function projectThemeStatus() {
+  const identity = projectThemeIdentity();
+  return {
+    ...identity,
+    adapterCollections: 0,
+    adapterVariables: 0,
+    adapterStyles: 0,
+    autoReconcile: autoReconcileState()
+  };
+}
+
 async function analyse(manifest) {
   const desired = buildDesiredModel(manifest);
   const snapshot = await localSnapshot();
@@ -1420,8 +3228,26 @@ async function apply(manifest) {
   };
 }
 
+figma.on('selectionchange', () => {
+  figma.ui.postMessage({ type: 'selection-changed' });
+});
+
 figma.ui.onmessage = async (message) => {
   try {
+    if (message?.type === 'plugin-settings-get') {
+      figma.ui.postMessage({ type: 'plugin-settings', payload: await readPluginSettings() });
+      return;
+    }
+    if (message?.type === 'plugin-settings-set') {
+      figma.ui.postMessage({ type: 'plugin-settings', payload: await writePluginSettings(message.settings || {}) });
+      return;
+    }
+    if (message?.type === 'resize-window') {
+      const width = Math.max(520, Math.min(1400, Number(message.width) || 680));
+      const height = Math.max(420, Math.min(1400, Number(message.height) || 760));
+      figma.ui.resize(Math.round(width), Math.round(height));
+      return;
+    }
     if (message?.type === 'bridge-request') {
       const requestId = message.requestId;
       try {
@@ -1430,6 +3256,14 @@ figma.ui.onmessage = async (message) => {
       } catch (error) {
         figma.ui.postMessage({ type: 'bridge-response', requestId, ok: false, error: serialiseError(error) });
       }
+      return;
+    }
+    if (message?.type === 'library-publish-status') {
+      const status = await currentLayerPublishStatus(message.layer);
+      figma.ui.postMessage({
+        type: 'library-publish-status',
+        payload: { ...status, message: publishStatusMessage(status), requestFor: message.requestFor || null }
+      });
       return;
     }
     if (message?.type === 'register-system-layer') {
@@ -1450,6 +3284,123 @@ figma.ui.onmessage = async (message) => {
     }
     if (message?.type === 'sync-master-assets') {
       figma.ui.postMessage({ type: 'master-assets-synced', payload: await syncMasterFigmaAssets() });
+      return;
+    }
+    if (message?.type === 'apply-flavour-foundations') {
+      const flavourId = message.manifest?.flavour?.id || message.manifest?.repository?.flavour || null;
+      if (!flavourId) throw new Error('Resolve a Flavour before building its Foundations library.');
+      const payload = await apply(message.manifest);
+      setSystemIdentity({ layer: 'foundations', role: 'flavour', flavourId });
+      figma.ui.postMessage({ type: 'flavour-foundations-applied', payload: { flavourId, apply: payload } });
+      return;
+    }
+    if (message?.type === 'register-flavour-foundations') {
+      const flavourId = message.flavourId || null;
+      if (!flavourId) throw new Error('Choose a Flavour before registering its Foundations library.');
+      figma.ui.postMessage({
+        type: 'flavour-foundations-registered',
+        payload: await registerCurrentSystemLayer({ layer: 'foundations', role: 'flavour', flavourId })
+      });
+      return;
+    }
+    if (message?.type === 'file-context') {
+      figma.ui.postMessage({
+        type: 'file-context',
+        payload: {
+          fileName: figma.root.name || '',
+          system: currentSystemIdentity(),
+          project: projectThemeIdentity()
+        }
+      });
+      return;
+    }
+    if (message?.type === 'set-auto-reconcile') {
+      setProjectAutoReconcile(Boolean(message.enabled), message.manifest || null);
+      return;
+    }
+    if (message?.type === 'arm-auto-reconcile') {
+      armAutoReconcile(message.manifest || null);
+      return;
+    }
+    if (message?.type === 'selection-context-detect') {
+      figma.ui.postMessage({
+        type: 'selection-context-detected',
+        payload: await detectSelectionContextTargets(message.manifest || {})
+      });
+      return;
+    }
+    if (message?.type === 'context-remap-capabilities') {
+      figma.ui.postMessage({
+        type: 'context-remap-capabilities',
+        payload: { domains: availableFigmaContextDomains(message.manifest || {}) }
+      });
+      return;
+    }
+    if (message?.type === 'context-remap-selection') {
+      figma.ui.postMessage({
+        type: 'context-remap-result',
+        payload: await remapContextSelection(
+          message.manifest || {},
+          message.domainId,
+          message.sourceTargetId,
+          message.destinationTargetId
+        )
+      });
+      return;
+    }
+    if (message?.type === 'context-generate-set') {
+      figma.ui.postMessage({
+        type: 'context-generate-set-result',
+        payload: await generateContextSet(
+          message.manifest || {},
+          message.domainId,
+          message.sourceTargetId,
+          message.destinationTargetIds || [],
+          {
+            stateIds: message.stateIds || ['default'],
+            focusResults: message.focusResults !== false
+          }
+        )
+      });
+      return;
+    }
+    if (message?.type === 'context-generate-disabled-copy') {
+      figma.ui.postMessage({
+        type: 'context-generate-disabled-result',
+        payload: await generateDisabledCopies(
+          message.manifest || {},
+          { focusResults: message.focusResults !== false }
+        )
+      });
+      return;
+    }
+    if (message?.type === 'flavour-extension-capabilities') {
+      figma.ui.postMessage({
+        type: 'flavour-extension-capabilities',
+        payload: {
+          flavourId: message.manifest?.flavour?.id || null,
+          extensions: availableFlavourExtensions(message.manifest || {})
+        }
+      });
+      return;
+    }
+    if (message?.type === 'flavour-extension-selection') {
+      figma.ui.postMessage({
+        type: 'flavour-extension-result',
+        payload: await applyFlavourExtensionToSelection(
+          message.manifest || {},
+          message.extensionId,
+          message.direction === 'reset' ? 'reset' : 'apply'
+        )
+      });
+      return;
+    }
+    if (message?.type === 'project-theme-status') {
+      figma.ui.postMessage({ type: 'project-theme-status', payload: await projectThemeStatus() });
+      return;
+    }
+    if (message?.type === 'apply-project-flavour') {
+      figma.ui.postMessage({ type: 'project-flavour-applied', payload: await applyProjectFlavour(message.manifest, message.scope || 'document') });
       return;
     }
     if (message?.type === 'analyse') {

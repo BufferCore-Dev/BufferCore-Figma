@@ -321,6 +321,20 @@
         "overrideCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "semanticMappingCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensionCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
         }
       },
       "additionalProperties": false
@@ -350,6 +364,9 @@
           ]
         }
       }
+    },
+    "contextContracts": {
+      "type": "object"
     }
   }
 }

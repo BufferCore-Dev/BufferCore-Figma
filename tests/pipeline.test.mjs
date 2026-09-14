@@ -474,3 +474,126 @@ test("Core updates flow into inherited Flavour values while Flavour-owned primit
   assert.equal(before.variables.find((item) => item.id === "space.4").values[0].value.value, 16);
   assert.equal(after.variables.find((item) => item.id === "space.4").values[0].value.value, 18);
 });
+
+
+test("Figma manifest preserves Context contracts and resolved Flavour Extensions", () => {
+  const canonical = canonicalFixture([
+    token({ id: "color.fill.context", cssVariable: "--bc-color-fill-context", layer: "semantic", foundation: "colour", path: ["color", "fill", "context"], valueType: "color", value: "#123456", unit: null }),
+    token({ id: "color.fill.timber", cssVariable: "--bc-color-fill-timber", layer: "semantic", foundation: "colour", path: ["color", "fill", "timber"], valueType: "color", value: "#654321", unit: null })
+  ]);
+  canonical.contextContracts = {
+    schemaVersion: 1,
+    source: "levels/foundations/utilities/_index.scss",
+    domains: {
+      colour: {
+        slots: { "--bc-color-fill-context": { id: "color.fill.context", cssVariable: "--bc-color-fill-context", foundation: "colour", valueType: "color" } },
+        targets: {}, slotCount: 1, targetCount: 0
+      }
+    },
+    diagnostics: []
+  };
+  canonical.flavour = {
+    id: "wood",
+    displayName: "Wood",
+    source: "../BufferCore-Flavours/flavours/wood/flavour.json",
+    overrideCount: 0,
+    semanticMappingCount: 0,
+    extensionCount: 1,
+    extensions: [{
+      id: "timber",
+      label: "Timber",
+      description: "",
+      domains: ["colour"],
+      mappingCount: 1,
+      mappings: [{
+        domain: "colour",
+        foundation: "colour",
+        context: { id: "color.fill.context", cssVariable: "--bc-color-fill-context" },
+        target: { id: "color.fill.timber", cssVariable: "--bc-color-fill-timber" }
+      }]
+    }]
+  };
+
+  const canonicalPath = writeCanonical(canonical);
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  assert.equal(manifest.contextContracts.domains.colour.slotCount, 1);
+  assert.equal(manifest.flavour.extensionCount, 1);
+  assert.equal(manifest.flavour.extensions[0].id, "timber");
+  assert.equal(validateFigmaManifest(manifest).length, 0);
+});
+
+
+test("Disabled Interaction opacity projects as a semantic OPACITY variable", () => {
+  const primitive = token({
+    id: "opacity.45",
+    cssVariable: "--bc-opacity-45",
+    foundation: "effects",
+    path: ["opacity", "45"],
+    valueType: "number",
+    value: "0.45",
+    unit: null
+  });
+  const disabled = token({
+    id: "interaction.disabled.opacity",
+    cssVariable: "--bc-interaction-disabled-opacity",
+    layer: "semantic",
+    foundation: "interaction",
+    path: ["interaction", "disabled", "opacity"],
+    valueType: "number",
+    value: "var(--bc-opacity-45)",
+    unit: null
+  });
+  disabled.variants[0].references = ["opacity.45"];
+  disabled.variants[0].resolved = "0.45";
+
+  const canonicalPath = writeCanonical(canonicalFixture([disabled, primitive]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  const variable = manifest.variables.find((item) => item.id === disabled.id);
+  assert.ok(variable);
+  assert.equal(variable.collectionId, "semantic.interaction");
+  assert.equal(variable.name, "Disabled / Opacity");
+  assert.deepEqual(variable.scopes, ["OPACITY"]);
+  assert.deepEqual(variable.values[0].value, { kind: "alias", tokenId: "opacity.45" });
+
+  const primitiveVariable = manifest.variables.find((item) => item.id === primitive.id);
+  assert.equal(primitiveVariable.name, "Opacity / 45");
+});
+
+test("Colour presentation no longer defines a Disabled colour family", () => {
+  const source = fs.readFileSync(new URL("../packages/figma-schema/src/index.mjs", import.meta.url), "utf8");
+  assert.equal(source.includes('["disabled", "focus", "link", "placeholder"]'), false);
+});
+
+
+test("Figma carries explicit Context projections for Colour, Typography and Shadows", () => {
+  const canonical = JSON.parse(fs.readFileSync(path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json"), "utf8"));
+  const canonicalPath = writeCanonical(canonical);
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  assert.equal(manifest.contextProjections.colour.representation, "variables");
+  assert.equal(manifest.contextProjections.colour.slotCount, 15);
+  assert.equal(Object.keys(manifest.contextProjections.colour.targets).length, 8);
+
+  assert.equal(manifest.contextProjections.typography.representation, "text-styles");
+  assert.equal(Object.keys(manifest.contextProjections.typography.targets).length, 22);
+  assert.ok(Object.values(manifest.contextProjections.typography.targets).every((item) => item.available));
+
+  assert.equal(manifest.contextProjections.shadows.representation, "effect-styles");
+  assert.equal(manifest.contextProjections.shadows.slotCount, 3);
+  assert.equal(Object.keys(manifest.contextProjections.shadows.targets).length, 3);
+  assert.ok(Object.values(manifest.contextProjections.shadows.targets)
+    .flatMap((target) => Object.values(target.styles))
+    .every((item) => item.available));
+});
+
+test("Figma publishes Disabled as a required OPACITY interaction-state projection", () => {
+  const canonical = JSON.parse(fs.readFileSync(path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json"), "utf8"));
+  const canonicalPath = writeCanonical(canonical);
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  assert.equal(manifest.interactionStates.disabled.available, true);
+  assert.equal(manifest.interactionStates.disabled.representation, "variable");
+  assert.ok(manifest.interactionStates.disabled.scopes.includes("OPACITY"));
+  assert.equal(manifest.interactionStates.disabled.variableId, "interaction.disabled.opacity");
+});

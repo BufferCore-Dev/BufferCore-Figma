@@ -123,6 +123,34 @@ const effectStyles = styles.filter((style) => style.type === 'EFFECT');
 assert(textStyles.length > 0, 'No Text Styles were generated.');
 assert(effectStyles.length > 0, 'No Effect Styles were generated.');
 
+
+const declaredContext = manifest.foundationContracts?.context || {};
+const contextProjections = manifest.contextProjections || {};
+
+for (const [domainId, contract] of Object.entries(declaredContext)) {
+  const projection = contextProjections[domainId];
+  assert(projection, `Missing Figma Context projection for ${domainId}.`);
+  assert(projection.representation === contract.figma?.representation, `${domainId} Figma representation does not match its Foundation contract.`);
+
+  if (projection.representation === 'variables') {
+    assert(Object.values(projection.slots || {}).every((item) => item.available), `${domainId} has unavailable Context variables.`);
+    assert(Object.values(projection.targets || {}).flatMap((target) => Object.values(target.mappings || {})).every((item) => item.available), `${domainId} has unavailable target variable mappings.`);
+  }
+
+  if (projection.representation === 'text-styles') {
+    assert(Object.values(projection.targets || {}).every((item) => item.available), `${domainId} has unavailable Text Style targets.`);
+  }
+
+  if (projection.representation === 'effect-styles') {
+    assert(Object.values(projection.targets || {}).flatMap((target) => Object.values(target.styles || {})).every((item) => item.available), `${domainId} has unavailable Effect Style targets.`);
+  }
+}
+
+const disabledState = manifest.interactionStates?.disabled;
+assert(disabledState?.available, 'Disabled state is not available in generated Figma Foundations.');
+assert(disabledState.representation === 'variable', 'Disabled state must project as a Figma variable.');
+assert((disabledState.scopes || []).includes('OPACITY'), 'Disabled state variable must use Figma OPACITY scope.');
+
 const desired = buildDesiredModel(manifest);
 const emptyDiff = buildDiffSummary(desired, { collections: [], variables: [], styles: [] });
 assert(emptyDiff.totals.create === collections.length + variables.length + styles.length, 'Clean-file import count does not match generated model.');
@@ -156,6 +184,8 @@ console.log(`Variables               : ${variables.length}`);
 console.log(`Colour variables        : ${colourVariables.length} (all COLOR)`);
 console.log(`Text styles             : ${textStyles.length}`);
 console.log(`Effect styles           : ${effectStyles.length}`);
+console.log(`Context projections     : Colour variables / Typography Text Styles / Shadow Effect Styles`);
+console.log(`Interaction states      : Disabled → OPACITY variable`);
 console.log(`Theme modes             : ${dimensions.get('Theme').join(' / ')}`);
 console.log(`Viewport modes          : ${dimensions.get('Viewport').join(' / ')}`);
 console.log(`Semantic Colour order   : ${requiredRootOrder.join(' -> ')}`);

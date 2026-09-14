@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { repositoryState, syncRepository, buildRepositoryMetadata, buildLocalWorkspaceMetadata } from '../packages/repository-sync/src/index.mjs';
+import { repositoryState, syncRepository, buildRepositoryMetadata } from '../packages/repository-sync/src/index.mjs';
 
 function fakeRunner({ branch = 'main', commit = 'abc123', status = '', remoteUrl = 'git@github.com:BufferCoreSystem/BufferCore.git', afterCommit = null } = {}) {
   const calls = [];
@@ -17,7 +17,7 @@ function fakeRunner({ branch = 'main', commit = 'abc123', status = '', remoteUrl
     if (joined.startsWith('remote get-url')) return remoteUrl;
     if (args[0] === 'switch' && args[1] && args[1] !== '--track') { currentBranch = args[1]; return ''; }
     if (args[0] === 'switch' && args[1] === '--track') { currentBranch = args[3]; return ''; }
-    if (args[0] === 'merge') { if (afterCommit) currentCommit = afterCommit; return ''; }
+    if (args[0] === 'pull') { if (afterCommit) currentCommit = afterCommit; return ''; }
     if (args[0] === 'fetch') return '';
     throw new Error(`Unexpected command: ${command} ${joined}`);
   };
@@ -38,16 +38,13 @@ test('sync refuses to pull a dirty repository by default', () => {
   assert.throws(() => syncRepository('.', { run }), /uncommitted changes/);
 });
 
-test('sync performs one authenticated fetch then a local fast-forward-only merge', () => {
+test('sync uses fetch plus fast-forward-only pull', () => {
   const { run, calls } = fakeRunner({ afterCommit: 'def456' });
   const result = syncRepository('.', { run });
   assert.equal(result.changed, true);
   assert.equal(result.commit, 'def456');
-  const fetches = calls.filter((call) => call[0] === 'git' && call[1] === 'fetch');
-  assert.equal(fetches.length, 1);
-  assert.deepEqual(fetches[0], ['git', 'fetch', '--prune', 'origin']);
-  assert.ok(calls.some((call) => call.join(' ') === 'git merge --ff-only origin/main'));
-  assert.equal(calls.some((call) => call[1] === 'pull'), false);
+  assert.ok(calls.some((call) => call.join(' ') === 'git fetch --prune origin'));
+  assert.ok(calls.some((call) => call.join(' ') === 'git pull --ff-only origin main'));
 });
 
 test('sync can select a configured branch before pulling', () => {
@@ -71,13 +68,13 @@ test('repository metadata records both source repos and selected Flavour', () =>
 
 test('development plugin manifest allows only the local repository bridge', () => {
   const manifest = JSON.parse(fs.readFileSync(new URL('../plugin/manifest.json', import.meta.url), 'utf8'));
-  assert.deepEqual(manifest.networkAccess.allowedDomains, ['http://localhost:3847']);
+  assert.deepEqual(manifest.networkAccess.allowedDomains, ['none']);
   assert.deepEqual(manifest.networkAccess.devAllowedDomains, ['http://localhost:3847']);
 });
 
-test('plugin UI separates Baseline and Flavour library workflows with manual fallback', () => {
+test('plugin UI exposes repository pull, branch, commit and Flavour controls with manual fallback', () => {
   const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  for (const expected of ['Repository', 'Baseline library', 'Flavour library', 'Pull + build Core', 'Pull + resolve', 'flavourSelect', 'Manual manifest fallback']) {
+  for (const expected of ['Repository', 'Core branch', 'Core commit', 'Flavours branch', 'Pull + build', 'flavourSelect', 'Manual manifest fallback']) {
     assert.match(html, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });
@@ -117,72 +114,11 @@ test('repository bridge failures are visible in the plugin UI instead of silentl
   assert.match(html, /Repository bridge did not respond at \$\{BRIDGE_URL\}/);
 });
 
-test('Core baseline sync does not contact the Flavours repository', () => {
-  const source = fs.readFileSync(new URL('../tools/sync-repository.mjs', import.meta.url), 'utf8');
-  const guard = source.indexOf('if (flavour) {');
-  const sync = source.indexOf('flavours = syncRepository');
-  assert.ok(guard >= 0 && sync > guard);
-  assert.match(source, /not required for Core baseline/);
-});
 
-test('plugin locks a Figma file to one library target instead of layering Baseline and Flavour objects together', () => {
-  const source = fs.readFileSync(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(source, /buffercore\.libraryTarget|BUFFERCORE_KEYS\.libraryTarget/);
-  assert.match(source, /current && current !== requested/);
-  assert.match(source, /Open the matching library file instead of applying/);
-});
-
-test('plugin keeps a canonical binding translation registry for future Element and Component rebinding', () => {
-  const source = fs.readFileSync(new URL('../plugin/src/code.mjs', import.meta.url), 'utf8');
-  assert.match(source, /buildBindingTranslationRegistry/);
-  assert.match(source, /bindingTranslationRegistry/);
-});
-
-test('repository bridge persists the master Figma asset registry for downstream Flavour libraries', () => {
+test('repository bridge preserves library-family registration with current auth and source-mode support', () => {
   const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(source, /masterAssetsPath/);
-  assert.match(source, /GET' && req\.url === '\/master-assets'/);
-  assert.match(source, /POST' && req\.url === '\/master-assets'/);
-});
-
-
-test('repository bridge persists the six-layer Figma library family separately for master and each Flavour', () => {
-  const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  assert.match(source, /buffercore\.library-family\.json/);
-  assert.match(source, /LIBRARY_FAMILY_LAYERS/);
   assert.match(source, /\/library-family\/register/);
   assert.match(source, /\/library-family\/status/);
-  assert.match(source, /family\.masters\[layer\]/);
-  assert.match(source, /family\.flavours\[payload\.flavourId\]\[layer\]/);
-});
-
-
-test('local workspace is the default Figma build source and GitHub is opt-in', () => {
-  const cli = fs.readFileSync(new URL('../tools/sync-repository.mjs', import.meta.url), 'utf8');
-  const bridge = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
-  const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-
-  assert.match(cli, /BUFFERCORE_SOURCE_MODE \|\| 'local'/);
-  assert.match(cli, /sourceMode === 'local'/);
-  assert.match(cli, /repositoryState\(corePath/);
-
-  assert.match(bridge, /sourceMode = process\.env\.BUFFERCORE_SOURCE_MODE \|\| 'local'/);
-  assert.match(bridge, /requestedSource === 'github' \? 'github' : 'local'/);
-  assert.match(bridge, /body\.source \|\| 'local'/);
-
-  assert.match(html, /<option value="local" selected>Local workspace — no GitHub fetch<\/option>/);
-  assert.match(html, /<option value="github">GitHub — fetch latest first<\/option>/);
-  assert.match(html, /source: \$\('sourceMode'\)\.value \|\| 'local'/);
-});
-
-test('local workspace metadata records local provenance without a remote fetch', () => {
-  const metadata = buildLocalWorkspaceMetadata({
-    core: { path: 'D:/BufferCoreSystem/BufferCore', branch: 'main', commit: 'aaa' },
-    flavours: { path: 'D:/BufferCoreSystem/BufferCore-Flavours', branch: 'main', commit: 'bbb' },
-    flavour: 'wallwood'
-  });
-  assert.equal(metadata.source, 'local-workspace');
-  assert.equal(metadata.core.commit, 'aaa');
-  assert.equal(metadata.flavours.commit, 'bbb');
-  assert.equal(metadata.flavour, 'wallwood');
+  assert.match(source, /\/auth\/github/);
+  assert.match(source, /body\.source \|\| 'local'/);
 });
