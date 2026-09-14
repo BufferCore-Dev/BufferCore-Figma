@@ -4,7 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { syncRepository, buildRepositoryMetadata } from '../packages/repository-sync/src/index.mjs';
+import { syncRepository, repositoryState, buildRepositoryMetadata, buildLocalWorkspaceMetadata } from '../packages/repository-sync/src/index.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const figmaRoot = path.resolve(scriptDir, '..');
@@ -16,7 +16,9 @@ function arg(name, fallback = null) {
   return index >= 0 && process.argv[index + 1] ? process.argv[index + 1] : fallback;
 }
 
-const noPull = process.argv.includes('--no-pull');
+const sourceMode = arg('--source', process.env.BUFFERCORE_SOURCE_MODE || 'local');
+const noPull = process.argv.includes('--no-pull') || sourceMode === 'local';
+if (!['local', 'github'].includes(sourceMode)) throw new Error(`Unknown source mode: ${sourceMode}`);
 const allowDirty = process.argv.includes('--allow-dirty');
 const corePath = path.resolve(arg('--core', path.resolve(systemRoot, 'BufferCore')));
 const flavoursPath = path.resolve(arg('--flavours', path.resolve(systemRoot, 'BufferCore-Flavours')));
@@ -50,31 +52,26 @@ try {
   console.log('BufferCore repository sync');
   console.log('────────────────────────────────');
 
-  const core = syncRepository(corePath, {
-    remote: coreRemote,
-    branch: coreBranch,
-    pull: !noPull,
-    allowDirty
-  });
+  console.log(`Source                  : ${sourceMode === 'local' ? 'Local workspace (no GitHub fetch)' : 'GitHub + local workspace'}`);
+
+  const core = sourceMode === 'local'
+    ? repositoryState(corePath, { remote: coreRemote })
+    : syncRepository(corePath, { remote: coreRemote, branch: coreBranch, pull: true, allowDirty });
   console.log(`Core                    : ${core.branch} @ ${core.commit.slice(0, 10)}${core.changed ? ' (updated)' : ''}`);
 
   let flavours = null;
-  if (flavour) {
-    if (!fs.existsSync(flavoursPath)) {
-      throw new Error(`Flavour repository not found: ${flavoursPath}`);
-    }
-    flavours = syncRepository(flavoursPath, {
-      remote: flavoursRemote,
-      branch: flavoursBranch,
-      pull: !noPull,
-      allowDirty
-    });
+  if (fs.existsSync(flavoursPath)) {
+    flavours = sourceMode === 'local'
+      ? repositoryState(flavoursPath, { remote: flavoursRemote })
+      : syncRepository(flavoursPath, { remote: flavoursRemote, branch: flavoursBranch, pull: true, allowDirty });
     console.log(`Flavours                : ${flavours.branch} @ ${flavours.commit.slice(0, 10)}${flavours.changed ? ' (updated)' : ''}`);
-  } else {
-    console.log('Flavours                : not required for Core baseline');
+  } else if (flavour) {
+    throw new Error(`Flavour repository not found: ${flavoursPath}`);
   }
 
-  const metadata = buildRepositoryMetadata({ core, flavours, flavour });
+  const metadata = sourceMode === 'local'
+    ? buildLocalWorkspaceMetadata({ core, flavours, flavour })
+    : buildRepositoryMetadata({ core, flavours, flavour });
   const metadataDir = path.join(figmaRoot, 'generated', 'sync');
   const metadataPath = path.join(metadataDir, 'repository.json');
   fs.mkdirSync(metadataDir, { recursive: true });

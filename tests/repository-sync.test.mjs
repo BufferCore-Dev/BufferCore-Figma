@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { repositoryState, syncRepository, buildRepositoryMetadata } from '../packages/repository-sync/src/index.mjs';
+import { repositoryState, syncRepository, buildRepositoryMetadata, buildLocalWorkspaceMetadata } from '../packages/repository-sync/src/index.mjs';
 
 function fakeRunner({ branch = 'main', commit = 'abc123', status = '', remoteUrl = 'git@github.com:BufferCoreSystem/BufferCore.git', afterCommit = null } = {}) {
   const calls = [];
@@ -154,4 +154,35 @@ test('repository bridge persists the six-layer Figma library family separately f
   assert.match(source, /\/library-family\/status/);
   assert.match(source, /family\.masters\[layer\]/);
   assert.match(source, /family\.flavours\[payload\.flavourId\]\[layer\]/);
+});
+
+
+test('local workspace is the default Figma build source and GitHub is opt-in', () => {
+  const cli = fs.readFileSync(new URL('../tools/sync-repository.mjs', import.meta.url), 'utf8');
+  const bridge = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
+  const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
+
+  assert.match(cli, /BUFFERCORE_SOURCE_MODE \|\| 'local'/);
+  assert.match(cli, /sourceMode === 'local'/);
+  assert.match(cli, /repositoryState\(corePath/);
+
+  assert.match(bridge, /sourceMode = process\.env\.BUFFERCORE_SOURCE_MODE \|\| 'local'/);
+  assert.match(bridge, /requestedSource === 'github' \? 'github' : 'local'/);
+  assert.match(bridge, /body\.source \|\| 'local'/);
+
+  assert.match(html, /<option value="local" selected>Local workspace — no GitHub fetch<\/option>/);
+  assert.match(html, /<option value="github">GitHub — fetch latest first<\/option>/);
+  assert.match(html, /source: \$\('sourceMode'\)\.value \|\| 'local'/);
+});
+
+test('local workspace metadata records local provenance without a remote fetch', () => {
+  const metadata = buildLocalWorkspaceMetadata({
+    core: { path: 'D:/BufferCoreSystem/BufferCore', branch: 'main', commit: 'aaa' },
+    flavours: { path: 'D:/BufferCoreSystem/BufferCore-Flavours', branch: 'main', commit: 'bbb' },
+    flavour: 'wallwood'
+  });
+  assert.equal(metadata.source, 'local-workspace');
+  assert.equal(metadata.core.commit, 'aaa');
+  assert.equal(metadata.flavours.commit, 'bbb');
+  assert.equal(metadata.flavour, 'wallwood');
 });

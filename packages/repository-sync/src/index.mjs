@@ -98,3 +98,12 @@ export function buildRepositoryMetadata({ core, flavours = null, flavour = null 
     flavour: flavour || null
   };
 }
+
+export function buildLocalWorkspaceMetadata({ core, flavours = null, flavour = null }) {
+  return {
+    source: 'local-workspace',
+    core: { path: core.path, branch: core.branch, commit: core.commit },
+    flavours: flavours ? { path: flavours.path, branch: flavours.branch, commit: flavours.commit } : null,
+    flavour: flavour || null
+  };
+}

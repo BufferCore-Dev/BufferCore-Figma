@@ -18,6 +18,7 @@ const masterAssetsPath = path.resolve(root, 'generated', 'figma', 'buffercore.ma
 const libraryFamilyPath = path.resolve(root, 'generated', 'figma', 'buffercore.library-family.json');
 const port = Number(process.env.BUFFERCORE_FIGMA_BRIDGE_PORT || 3847);
 let syncing = false;
+let sourceMode = process.env.BUFFERCORE_SOURCE_MODE || 'local';
 
 function json(res, status, value) {
   const body = JSON.stringify(value);
@@ -157,6 +158,7 @@ function currentStatus() {
   return {
     ok: true,
     syncing,
+    sourceMode,
     core: safeRepoState(corePath),
     flavoursRepository: fs.existsSync(flavoursPath) ? safeRepoState(flavoursPath) : null,
     flavours: listFlavours(),
@@ -177,12 +179,13 @@ function currentStatus() {
   };
 }
 
-async function sync(flavour) {
+async function sync(flavour, requestedSource = 'local') {
   if (syncing) throw new Error('A repository sync is already running.');
   syncing = true;
+  sourceMode = requestedSource === 'github' ? 'github' : 'local';
   try {
-    const args = ['run', 'repo:sync'];
-    if (flavour) args.push('--', '--flavour', flavour);
+    const args = ['run', 'repo:sync', '--', '--source', sourceMode];
+    if (flavour) args.push('--flavour', flavour);
     const invocation = process.env.npm_execpath
       ? { command: process.execPath, args: [process.env.npm_execpath, ...args] }
       : process.platform === 'win32'
@@ -249,7 +252,7 @@ const server = http.createServer(async (req, res) => {
     let body = {};
     try { body = raw ? JSON.parse(raw) : {}; } catch { return json(res, 400, { ok: false, error: 'Invalid JSON request.' }); }
     try {
-      return json(res, 200, await sync(body.flavour || null));
+      return json(res, 200, await sync(body.flavour || null, body.source || 'local'));
     } catch (error) {
       return json(res, 409, { ok: false, error: error?.message || String(error), status: currentStatus() });
     }
