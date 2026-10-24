@@ -203,6 +203,18 @@ function canonicalModeValue(definition, entry) {
   if (definition.type === 'COLOR' && literal && typeof literal === 'object') {
     literal = { r: literal.r, g: literal.g, b: literal.b, a: literal.a ?? 1 };
   }
+  // Figma's OPACITY variable scope stores values in percentage space (45 = 45%).
+  // BufferCore's canonical CSS opacity scale remains normalised (0.45 = 45%).
+  // Project the value here as well as at apply-time so Inspect can detect that an
+  // existing 0.45 Figma value needs updating to 45 instead of reporting 0 changes.
+  if (definition.type === 'FLOAT' && typeof literal === 'number') {
+    const isCoreOpacityPrimitive = String(definition.id || '').startsWith('opacity.')
+      || String(definition.cssVariable || '').startsWith('--bc-opacity-');
+    if (((definition.scopes || []).includes('OPACITY') || isCoreOpacityPrimitive)
+      && literal >= 0 && literal <= 1) {
+      literal = Number((literal * 100).toFixed(6));
+    }
+  }
   return { kind: 'literal', value: literal };
 }
 
@@ -229,21 +241,91 @@ function desiredVariableSignature(definition) {
 }
 
 function desiredStyleSignature(definition) {
-  // Figma style APIs expose different bound-value shapes by style type. For
-  // stable identity we track the public style contract here and keep detailed
-  // content application in the plugin. This still detects rename/type drift.
-  return stableStringify({ name: definition.name, type: definition.type });
+  // Track the generated style contract rather than name/type alone so source
+  // typography changes (including unitless CSS line-height -> Figma percent)
+  // are applied even when the style keeps the same canonical id.
+  return stableStringify({
+    name: definition.name,
+    type: definition.type,
+    leadingTrim: definition.leadingTrim || null,
+    lineHeight: definition.lineHeight || null,
+    bindings: definition.bindings || null,
+    effects: definition.effects || null
+  });
+}
+
+function parseSignature(signature) {
+  if (!signature || typeof signature !== 'string') return null;
+  try {
+    const parsed = JSON.parse(signature);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutKeys(value, keys) {
+  if (!value || typeof value !== 'object') return value;
+  const result = { ...value };
+  for (const key of keys) delete result[key];
+  return result;
+}
+
+function signatureChangedOnlyIn(signatureA, signatureB, keys) {
+  const a = parseSignature(signatureA);
+  const b = parseSignature(signatureB);
+  if (!a || !b) return false;
+  return stableStringify(withoutKeys(a, keys)) === stableStringify(withoutKeys(b, keys));
+}
+
+function reclassifyManagedMetadata(diff, keys) {
+  // Scopes/publishing are BufferCore-managed Figma exposure metadata. When a
+  // contract migration changes only those fields, it must not be mistaken for
+  // user-authored design drift. Genuine name/type/value/mode edits still remain
+  // drift/conflicts and keep the safety gate intact.
+  const update = [...(diff.update || [])];
+  const drift = [];
+  const conflict = [];
+
+  for (const item of diff.drift || []) {
+    const exposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedLiveSignature,
+      item.current?.liveSignature,
+      keys
+    );
+    if (exposureOnly) update.push(item);
+    else drift.push(item);
+  }
+
+  for (const item of diff.conflict || []) {
+    const sourceExposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedSignature,
+      item.desiredSignature,
+      keys
+    );
+    const figmaExposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedLiveSignature,
+      item.current?.liveSignature,
+      keys
+    );
+    if (sourceExposureOnly && figmaExposureOnly) update.push(item);
+    else conflict.push(item);
+  }
+
+  return { ...diff, update, drift, conflict };
 }
 
 function buildDiffSummary(desired, snapshot) {
-  const collectionDiff = diffByCanonicalId(desired.collections, snapshot.collections, desiredCollectionSignature, (a, b) => {
+  const rawCollectionDiff = diffByCanonicalId(desired.collections, snapshot.collections, desiredCollectionSignature, (a, b) => {
     return (a.figmaName || a.name) === b.name && a.publish === b.publish && stableStringify(a.modes.map((m) => m.name)) === stableStringify(b.modeNames || []);
   });
+  const collectionDiff = reclassifyManagedMetadata(rawCollectionDiff, ['publish']);
 
   const desiredVariables = desired.collections.flatMap((collection) => collection.variables.map((variable) => ({ ...variable, collectionId: collection.id })));
-  const variableDiff = diffByCanonicalId(desiredVariables, snapshot.variables, desiredVariableSignature, (a, b) => {
+  const rawVariableDiff = diffByCanonicalId(desiredVariables, snapshot.variables, desiredVariableSignature, (a, b) => {
     return (a.figmaName || a.name) === b.name && a.collectionId === b.collectionCanonicalId && a.type === b.type && stableStringify(a.scopes || []) === stableStringify(b.scopes || []);
   });
+  const variableDiff = reclassifyManagedMetadata(rawVariableDiff, ['scopes', 'publish']);
   const styleDiff = diffByCanonicalId(desired.styles, snapshot.styles, desiredStyleSignature, (a, b) => a.name === b.name && a.type === b.type);
 
   const groups = [collectionDiff, variableDiff, styleDiff];
@@ -291,9 +373,126 @@ function summariseDiffByKind(diff) {
   };
 }
 
-figma.showUI(__html__, { width: 680, height: 760, themeColors: true });
+
+
+
+function contextCssSemanticTraits(cssVariable) {
+  const source = String(cssVariable || '').toLowerCase();
+  const has = (token) => new RegExp(`(?:^|-)${token}(?:-|$)`).test(source);
+  return {
+    inverse: has('inverse'),
+    strong: has('strong'),
+    muted: has('muted'),
+    subtle: has('subtle'),
+    soft: has('soft'),
+    bold: has('bold')
+  };
+}
+
+function resolveContextMappingAmbiguity(domainId, sourceCss, destinations) {
+  const candidates = [...new Set((destinations || []).filter(Boolean))];
+  if (candidates.length <= 1) return candidates[0] || null;
+
+  // Colour Text has a deliberately smaller Neutral family than the chromatic
+  // roles. That means one canonical text token can legitimately occupy more
+  // than one Context slot. Resolve those collisions by preserving the semantic
+  // traits carried by the actual bound token (especially inverse text), instead
+  // of dropping the binding as ambiguous. Other Context domains keep the strict
+  // ambiguity behaviour.
+  if (domainId !== 'colour' || !String(sourceCss || '').includes('-color-text')) return null;
+
+  const weights = { inverse: 100, strong: 20, muted: 10, subtle: 10, soft: 10, bold: 10 };
+  const sourceTraits = contextCssSemanticTraits(sourceCss);
+  const ranked = candidates.map((destination) => {
+    const destinationTraits = contextCssSemanticTraits(destination);
+    let score = 0;
+    for (const [trait, weight] of Object.entries(weights)) {
+      score += sourceTraits[trait] === destinationTraits[trait] ? weight : -weight;
+    }
+    return { destination, score };
+  }).sort((a, b) => b.score - a.score || a.destination.localeCompare(b.destination));
+
+  if (!ranked.length || (ranked[1] && ranked[0].score === ranked[1].score)) return null;
+  return ranked[0].destination;
+}
+
+function variantNameParts(name) {
+  const source = String(name ?? '').trim();
+  if (!source || !source.includes('=')) return null;
+
+  // Figma normally separates variant properties with commas, while some
+  // BufferCore-authored sets use slash-separated property names. Preserve the
+  // authored convention rather than converting the whole component name.
+  const delimiterMatch = source.match(/\s*,\s*|\s+\/\s+/);
+  const delimiter = delimiterMatch?.[0] || null;
+  const rawParts = delimiter ? source.split(delimiterMatch[0]) : [source];
+  const parts = rawParts.map((part) => {
+    const match = String(part).trim().match(/^([^=]+?)\s*=\s*(.*)$/);
+    if (!match) return null;
+    return { property: match[1].trim(), value: match[2].trim() };
+  });
+
+  if (parts.some((part) => !part)) return null;
+  return { source, delimiter, parts };
+}
+
+function upsertVariantNameProperty(name, propertyNames, value, preferredPropertyName = null) {
+  const parsed = variantNameParts(name);
+  if (!parsed) return null;
+
+  const candidates = [...new Set((propertyNames || [])
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean))];
+  if (!candidates.length) return parsed.source;
+
+  const nextParts = parsed.parts.map((part) => ({ ...part }));
+  const index = nextParts.findIndex((part) => candidates.includes(part.property.toLowerCase()));
+  const nextValue = String(value ?? '').trim();
+
+  if (index >= 0) {
+    nextParts[index].value = nextValue;
+  } else {
+    nextParts.push({
+      property: String(preferredPropertyName || propertyNames?.[0] || 'Variant').trim(),
+      value: nextValue
+    });
+  }
+
+  const delimiter = parsed.delimiter || ', ';
+  return nextParts.map((part) => `${part.property}=${part.value}`).join(delimiter);
+}
+
+figma.showUI(__html__, { width: 780, height: 860, themeColors: true });
 
 const PLUGIN_SETTINGS_KEY = 'buffercore.plugin.settings';
+
+const PRESENTATION_ORDER_KEY = 'buffercore.presentationOrderVersion';
+const SEMANTIC_COLOUR_PRESENTATION_ORDER_VERSION = '2';
+
+const WINDOW_LIMITS = Object.freeze({
+  minWidth: 620,
+  maxWidth: 1000,
+  minHeight: 680,
+  maxHeight: 1080,
+  defaultWidth: 780,
+  defaultHeight: 860,
+  minFontSize: 12.5,
+  maxFontSize: 24,
+  defaultFontSize: 14
+});
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function legacyFontSizeFor(stored) {
+  if (Number.isFinite(Number(stored?.fontSizePx))) return Number(stored.fontSizePx);
+  if (stored?.fontScale === 'small') return 12.5;
+  if (stored?.fontScale === 'large') return 16;
+  return WINDOW_LIMITS.defaultFontSize;
+}
 
 async function readPluginSettings() {
   const stored = await figma.clientStorage.getAsync(PLUGIN_SETTINGS_KEY).catch(() => null);
@@ -301,9 +500,16 @@ async function readPluginSettings() {
     ? 'tools'
     : stored?.defaultTab;
   const allowedTabs = new Set(['tools', 'flavours']);
+  const legacyFontSize = legacyFontSizeFor(stored);
   return {
     defaultTab: allowedTabs.has(migratedDefault) ? migratedDefault : 'tools',
-    focusGeneratedResults: stored?.focusGeneratedResults !== false
+    focusGeneratedResults: stored?.focusGeneratedResults !== false,
+    levelsOpenOnHover: stored?.levelsOpenOnHover !== false,
+    defaultGeneratePresetId: typeof stored?.defaultGeneratePresetId === 'string' ? stored.defaultGeneratePresetId : 'grid-5-auto',
+    generatePresets: Array.isArray(stored?.generatePresets) ? stored.generatePresets : [],
+    windowWidth: clampNumber(stored?.windowWidth, WINDOW_LIMITS.minWidth, WINDOW_LIMITS.maxWidth, WINDOW_LIMITS.defaultWidth),
+    windowHeight: clampNumber(stored?.windowHeight, WINDOW_LIMITS.minHeight, WINDOW_LIMITS.maxHeight, WINDOW_LIMITS.defaultHeight),
+    fontSizePx: clampNumber(stored?.fontSizePx, WINDOW_LIMITS.minFontSize, WINDOW_LIMITS.maxFontSize, legacyFontSize)
   };
 }
 
@@ -315,11 +521,43 @@ async function writePluginSettings(next = {}) {
     ...(allowedTabs.has(next.defaultTab) ? { defaultTab: next.defaultTab } : {}),
     ...(typeof next.focusGeneratedResults === 'boolean'
       ? { focusGeneratedResults: next.focusGeneratedResults }
+      : {}),
+    ...(typeof next.levelsOpenOnHover === 'boolean'
+      ? { levelsOpenOnHover: next.levelsOpenOnHover }
+      : {}),
+    ...(typeof next.defaultGeneratePresetId === 'string'
+      ? { defaultGeneratePresetId: next.defaultGeneratePresetId }
+      : {}),
+    ...(Array.isArray(next.generatePresets)
+      ? { generatePresets: next.generatePresets.slice(0, 50) }
+      : {}),
+    ...(next.windowWidth !== undefined
+      ? { windowWidth: clampNumber(next.windowWidth, WINDOW_LIMITS.minWidth, WINDOW_LIMITS.maxWidth, current.windowWidth) }
+      : {}),
+    ...(next.windowHeight !== undefined
+      ? { windowHeight: clampNumber(next.windowHeight, WINDOW_LIMITS.minHeight, WINDOW_LIMITS.maxHeight, current.windowHeight) }
+      : {}),
+    ...(next.fontSizePx !== undefined
+      ? { fontSizePx: clampNumber(next.fontSizePx, WINDOW_LIMITS.minFontSize, WINDOW_LIMITS.maxFontSize, current.fontSizePx) }
       : {})
   };
   await figma.clientStorage.setAsync(PLUGIN_SETTINGS_KEY, result);
   return result;
 }
+
+function applyWindowSize(width, height) {
+  const safeWidth = Math.round(clampNumber(width, WINDOW_LIMITS.minWidth, WINDOW_LIMITS.maxWidth, WINDOW_LIMITS.defaultWidth));
+  const safeHeight = Math.round(clampNumber(height, WINDOW_LIMITS.minHeight, WINDOW_LIMITS.maxHeight, WINDOW_LIMITS.defaultHeight));
+  figma.ui.resize(safeWidth, safeHeight);
+  return { width: safeWidth, height: safeHeight };
+}
+
+async function restoreWindowSize() {
+  const settings = await readPluginSettings();
+  applyWindowSize(settings.windowWidth, settings.windowHeight);
+}
+
+void restoreWindowSize();
 
 const REPOSITORY_BRIDGE_URL = 'http://localhost:3847';
 
@@ -355,9 +593,9 @@ function rgbaFromHex(value) {
 }
 
 const VALID_SCOPES_BY_TYPE = {
-  COLOR: new Set(['ALL_FILLS', 'FRAME_FILL', 'SHAPE_FILL', 'TEXT_FILL', 'STROKE_COLOR', 'EFFECT_COLOR']),
-  FLOAT: new Set(['CORNER_RADIUS', 'WIDTH_HEIGHT', 'GAP', 'OPACITY', 'FONT_WEIGHT', 'FONT_SIZE', 'LINE_HEIGHT', 'LETTER_SPACING', 'PARAGRAPH_SPACING', 'PARAGRAPH_INDENT']),
-  STRING: new Set(['TEXT_CONTENT', 'FONT_FAMILY', 'FONT_STYLE'])
+  COLOR: new Set(['ALL_SCOPES', 'ALL_FILLS', 'FRAME_FILL', 'SHAPE_FILL', 'TEXT_FILL', 'STROKE_COLOR', 'EFFECT_COLOR']),
+  FLOAT: new Set(['ALL_SCOPES', 'TEXT_CONTENT', 'CORNER_RADIUS', 'WIDTH_HEIGHT', 'GAP', 'STROKE_FLOAT', 'EFFECT_FLOAT', 'OPACITY', 'COLOR_OPACITY', 'FONT_WEIGHT', 'FONT_SIZE', 'LINE_HEIGHT', 'LETTER_SPACING', 'PARAGRAPH_SPACING', 'PARAGRAPH_INDENT']),
+  STRING: new Set(['ALL_SCOPES', 'TEXT_CONTENT', 'FONT_FAMILY', 'FONT_STYLE'])
 };
 
 function supportedScopes(type, scopes = []) {
@@ -377,20 +615,24 @@ function applyVariableCodeSyntax(variable, definition, result) {
 }
 
 function applyVariableScopes(variable, definition, result) {
-  const requested = definition.scopes || [];
-  if (!requested.length) return;
+  if (!Array.isArray(definition.scopes)) return;
+  const allowed = VALID_SCOPES_BY_TYPE[definition.type];
+  if (!allowed) return;
 
+  const requested = definition.scopes;
   const scopes = supportedScopes(definition.type, requested);
   const ignored = requested.filter((scope) => !scopes.includes(scope));
   if (ignored.length) {
     result.warnings.push(`${definition.id}: ignored incompatible Figma scopes for ${definition.type}: ${ignored.join(', ')}`);
   }
-  if (!scopes.length) return;
 
   try {
+    // An explicit empty scope list is meaningful in Figma: it hides the
+    // variable from every property picker. BufferCore uses that for primitives
+    // and other implementation-only variables while still allowing aliases.
     variable.scopes = scopes;
   } catch (error) {
-    result.warnings.push(`${definition.id}: Figma rejected scopes ${scopes.join(', ')}; kept the existing/default scope. ${error?.message || error}`);
+    result.warnings.push(`${definition.id}: Figma rejected scopes ${scopes.join(', ') || '(none)'}; kept the existing/default scope. ${error?.message || error}`);
   }
 }
 
@@ -400,7 +642,21 @@ function figmaLiteral(variable, value) {
     if (typeof value.value === 'object' && value.value && 'r' in value.value) return value.value;
     return rgbaFromHex(value.value);
   }
-  if (variable.type === 'FLOAT') return typeof value.value === 'number' ? value.value : null;
+  if (variable.type === 'FLOAT') {
+    if (typeof value.value !== 'number') return null;
+    // Figma opacity variables use percentage-space values (45 = 45%).
+    // BufferCore keeps opacity canonically normalised (0.45 = 45%). Semantic
+    // OPACITY variables often alias the hidden primitive opacity scale, so the
+    // primitive itself must also be projected in percentage-space; otherwise an
+    // alias such as Disabled -> opacity.45 resolves to 0.45% instead of 45%.
+    const isCoreOpacityPrimitive = String(variable.id || '').startsWith('opacity.')
+      || String(variable.cssVariable || '').startsWith('--bc-opacity-');
+    if (((variable.scopes || []).includes('OPACITY') || isCoreOpacityPrimitive)
+      && value.value >= 0 && value.value <= 1) {
+      return Number((value.value * 100).toFixed(6));
+    }
+    return value.value;
+  }
   if (variable.type === 'BOOLEAN') return typeof value.value === 'boolean' ? value.value : null;
   if (variable.type === 'STRING') return value.value == null ? null : String(value.value);
   return null;
@@ -561,6 +817,56 @@ async function ensureCollections(desired, result) {
   return collectionByCanonicalId;
 }
 
+async function ensureSemanticColourPresentationOrder(desired, collections, result) {
+  const definition = desired.collections.find((collection) => collection.id === 'semantic.colour');
+  const collection = collections.get('semantic.colour');
+  if (!definition || !collection || definition.kind === 'divider') return;
+
+  const expectedIds = definition.variables.map((variable) => variable.id);
+  if (!expectedIds.length) return;
+
+  const existing = await figma.variables.getLocalVariablesAsync();
+  const expectedIdSet = new Set(expectedIds);
+  const pluginOwned = existing.filter((variable) => {
+    if (variable.variableCollectionId !== collection.id) return false;
+    const canonicalId = variable.getPluginData(BUFFERCORE_KEYS.variableId);
+    return canonicalId && expectedIdSet.has(canonicalId);
+  });
+
+  // Figma exposes variableIds as readonly. It has no Plugin API for moving an
+  // existing variable to another position inside a collection. Renaming alone
+  // therefore cannot repair picker order. Compare the current plugin-owned
+  // sequence with the canonical presentation sequence and perform a one-time
+  // rebuild before component design begins when they differ.
+  const byFigmaId = new Map(pluginOwned.map((variable) => [variable.id, variable]));
+  const currentIds = (collection.variableIds || [])
+    .map((figmaId) => byFigmaId.get(figmaId)?.getPluginData(BUFFERCORE_KEYS.variableId) || null)
+    .filter(Boolean);
+
+  const alreadyOrdered = currentIds.length === expectedIds.length
+    && currentIds.every((id, index) => id === expectedIds[index]);
+
+  if (alreadyOrdered) {
+    collection.setPluginData(PRESENTATION_ORDER_KEY, SEMANTIC_COLOUR_PRESENTATION_ORDER_VERSION);
+    return;
+  }
+
+  if (!pluginOwned.length) {
+    collection.setPluginData(PRESENTATION_ORDER_KEY, SEMANTIC_COLOUR_PRESENTATION_ORDER_VERSION);
+    return;
+  }
+
+  for (const variable of pluginOwned) {
+    try { variable.remove(); } catch (error) {
+      throw new Error(`Could not rebuild Semantic Colour ordering: ${serialiseError(error)}`);
+    }
+  }
+
+  result.reorderedVariables = (result.reorderedVariables || 0) + pluginOwned.length;
+  result.warnings.push(`Rebuilt ${pluginOwned.length} Semantic Colour variables once so Figma presents each family from lightest to darkest.`);
+  collection.setPluginData(PRESENTATION_ORDER_KEY, SEMANTIC_COLOUR_PRESENTATION_ORDER_VERSION);
+}
+
 async function ensureVariables(desired, collections, result) {
   const existing = await figma.variables.getLocalVariablesAsync();
   const byCanonicalId = new Map(existing.map((variable) => [variable.getPluginData(BUFFERCORE_KEYS.variableId), variable]).filter(([id]) => id));
@@ -575,10 +881,15 @@ async function ensureVariables(desired, collections, result) {
       const figmaName = definition.figmaName || definition.name;
       let variable = byCanonicalId.get(definition.id) || byCollectionAndName.get(`${collection.id}|${figmaName}`) || byCollectionAndName.get(`${collection.id}|${definition.name}`);
       if (variable && variable.resolvedType !== definition.type) {
-        // Figma cannot change a variable's resolved type in place. Replace the
-        // old plugin-owned variable so canonical capability fixes (for example
-        // unset colour tokens previously imported as STRING) can migrate safely.
+        // Figma cannot change a variable's resolved type in place. A replacement
+        // also cannot be created with the same name while the old variable still
+        // exists in that collection, so park the legacy variable under a unique
+        // temporary name first. Keeping it alive until aliases/styles have been
+        // rebound prevents broken references during the migration.
         const oldVariable = variable;
+        if (oldVariable.variableCollectionId === collection.id && oldVariable.name === figmaName) {
+          oldVariable.name = `__BufferCore Migration / ${definition.id} / ${oldVariable.id}`;
+        }
         variable = figma.variables.createVariable(figmaName, collection, definition.type);
         obsoleteVariables.push(oldVariable);
         result.migratedVariables += 1;
@@ -594,7 +905,13 @@ async function ensureVariables(desired, collections, result) {
         result.updatedVariables += 1;
       }
 
-      variable.name = figmaName;
+      // Do not reassign an unchanged variable name. Older Figma files can
+      // legitimately contain historical duplicate-name states that are tolerated
+      // until the name setter is invoked again; touching the same name can then
+      // throw `set_name: duplicate variable name` even though this sync only
+      // needs to update scopes/publishing metadata. Only rename when the desired
+      // Figma name actually changed.
+      if (variable.name !== figmaName) variable.name = figmaName;
       applyVariableScopes(variable, definition, result);
       applyVariableCodeSyntax(variable, definition, result);
       variable.setPluginData(BUFFERCORE_KEYS.variableId, definition.id);
@@ -675,6 +992,34 @@ async function ensureTextStyle(definition, variables, result, existingById, exis
     try { style.fontName = loadedFontName; } catch {}
   }
 
+  // Mirror the web typography box as closely as Figma allows. Figma's
+  // CAP_HEIGHT leading trim corresponds to CSS text-box trimming from the
+  // cap edge to the alphabetic baseline. Font loading above is required
+  // before changing leadingTrim.
+  if (definition.leadingTrim === 'CAP_HEIGHT' || definition.leadingTrim === 'NONE') {
+    try { style.leadingTrim = definition.leadingTrim; } catch (error) {
+      result.warnings.push(`${definition.id}: could not set leading trim: ${serialiseError(error)}`);
+    }
+  }
+
+  // Core stores unitless CSS line-height ratios (for example 1.3). Figma's
+  // number variables cannot represent percentage line-height semantics: a
+  // numeric LINE_HEIGHT binding is absolute. Materialise the generated Text
+  // Style line-height directly as a percentage instead (1.3 -> 130%).
+  if (definition.lineHeight?.unit === 'PERCENT' && Number.isFinite(Number(definition.lineHeight.value))) {
+    try {
+      style.lineHeight = { unit: 'PERCENT', value: Number(definition.lineHeight.value) };
+    } catch (error) {
+      result.warnings.push(`${definition.id}: could not set percentage line height: ${serialiseError(error)}`);
+    }
+  } else if (definition.lineHeight?.unit === 'PIXELS' && Number.isFinite(Number(definition.lineHeight.value))) {
+    try {
+      style.lineHeight = { unit: 'PIXELS', value: Number(definition.lineHeight.value) };
+    } catch (error) {
+      result.warnings.push(`${definition.id}: could not set pixel line height: ${serialiseError(error)}`);
+    }
+  }
+
   const fieldMap = {
     'font-family': 'fontFamily',
     'font-size': 'fontSize',
@@ -683,6 +1028,10 @@ async function ensureTextStyle(definition, variables, result, existingById, exis
     'letter-spacing': 'letterSpacing'
   };
   for (const [property, binding] of Object.entries(definition.bindings || {})) {
+    // Line-height is intentionally materialised directly above. Binding the
+    // unitless Core ratio as a Figma FLOAT would turn 1.3 into 1.3px rather
+    // than the intended 130%.
+    if (property === 'line-height' && definition.lineHeight) continue;
     const variable = variables.get(binding.tokenId);
     const field = fieldMap[property];
     if (!variable || !field || typeof style.setBoundVariable !== 'function') continue;
@@ -780,6 +1129,31 @@ async function cleanupRetiredVariables(desired, result) {
       result.removedRetiredVariables += 1;
     } catch (error) {
       result.warnings.push(`Could not remove retired BufferCore variable ${variable.name}: ${serialiseError(error)}`);
+    }
+  }
+}
+
+async function cleanupOrphanedVariables(desired, result) {
+  // The generated manifest is the source of truth for BufferCore-owned variables.
+  // If a previously managed canonical variable no longer exists in the desired
+  // build (including a canonical rename that appears as remove + add), scrub the
+  // old local Figma variable so the library cannot accumulate stale tokens.
+  // Unmanaged/local user variables have no BufferCore canonical id and are never
+  // touched here.
+  const desiredIds = new Set(
+    desired.collections.flatMap((collection) => collection.variables.map((variable) => variable.id))
+  );
+  const retiredIds = new Set((desired.retiredVariables || []).map((item) => item.id).filter(Boolean));
+  const variables = await figma.variables.getLocalVariablesAsync();
+
+  for (const variable of variables) {
+    const canonicalId = variable.getPluginData(BUFFERCORE_KEYS.variableId);
+    if (!canonicalId || desiredIds.has(canonicalId) || retiredIds.has(canonicalId)) continue;
+    try {
+      variable.remove();
+      result.removedOrphanedVariables += 1;
+    } catch (error) {
+      result.warnings.push(`Could not remove orphaned BufferCore variable ${variable.name}: ${serialiseError(error)}`);
     }
   }
 }
@@ -937,40 +1311,43 @@ async function currentLayerPublishStatus(layer) {
   };
 
   if (layer === 'foundations') {
+    // Figma exposes publication state on the variables/styles themselves. Keep
+    // the original working semantics, but resolve them concurrently so a large
+    // Foundations library does not make registration look hung.
     const registry = readBindingRegistry();
     const collections = await figma.variables.getLocalVariableCollectionsAsync();
     const collectionsById = new Map(collections.map((collection) => [collection.id, collection]));
+    const variables = await figma.variables.getLocalVariablesAsync();
+    const variablesById = new Map(variables.map((variable) => [variable.id, variable]));
 
-    const checkedCollections = new Set();
-    for (const figmaId of Object.values(registry.variables || {})) {
-      let variable = null;
-      try { variable = await figma.variables.getVariableByIdAsync(figmaId); } catch {}
-      if (!variable || variable.remote) continue;
+    const publishableVariables = Object.values(registry.variables || {})
+      .map((figmaId) => variablesById.get(figmaId))
+      .filter((variable) => {
+        if (!variable || variable.remote || variable.hiddenFromPublishing) return false;
+        const collection = collectionsById.get(variable.variableCollectionId);
+        return Boolean(collection && !collection.hiddenFromPublishing);
+      });
 
-      const collection = collectionsById.get(variable.variableCollectionId);
-      const publishable = !variable.hiddenFromPublishing && collection && !collection.hiddenFromPublishing;
-      if (!publishable) continue;
+    const variableStatuses = await Promise.all(
+      publishableVariables.map((variable) => safePublishStatus(variable))
+    );
+    statuses.push(...variableStatuses);
 
-      statuses.push(await safePublishStatus(variable));
-
-      if (!checkedCollections.has(collection.id)) {
-        checkedCollections.add(collection.id);
-        statuses.push(await safePublishStatus(collection));
-      }
-    }
-
-    for (const figmaId of Object.values(registry.styles || {})) {
-      let style = null;
-      try { style = await figma.getStyleByIdAsync?.(figmaId); } catch {}
-      if (!style || style.remote) continue;
-      statuses.push(await safePublishStatus(style));
-    }
+    const localStyles = await Promise.all(
+      Object.values(registry.styles || {}).map(async (figmaId) => {
+        try { return await figma.getStyleByIdAsync?.(figmaId); }
+        catch { return null; }
+      })
+    );
+    const styleStatuses = await Promise.all(
+      localStyles.filter((style) => style && !style.remote).map((style) => safePublishStatus(style))
+    );
+    statuses.push(...styleStatuses);
   } else {
     const roots = await localComponentRoots();
-    for (const node of roots) {
-      if (!node || node.remote) continue;
-      statuses.push(await safePublishStatus(node));
-    }
+    statuses.push(...await Promise.all(
+      roots.filter((node) => node && !node.remote).map((node) => safePublishStatus(node))
+    ));
   }
 
   const counts = summarisePublishStatuses(statuses);
@@ -1016,52 +1393,75 @@ async function assertLayerPublishedCurrent(layer) {
   return status;
 }
 
-async function publishedFoundationBindings() {
+async function publishedFoundationBindings({ requireCurrent = true } = {}) {
   const registry = readBindingRegistry();
   const variables = {};
   const styles = {};
   const collections = await figma.variables.getLocalVariableCollectionsAsync();
   const collectionsById = new Map(collections.map((collection) => [collection.id, collection]));
+  const localVariables = await figma.variables.getLocalVariablesAsync();
+  const variablesById = new Map(localVariables.map((variable) => [variable.id, variable]));
 
-  for (const [canonicalId, figmaId] of Object.entries(registry.variables || {})) {
-    try {
-      const variable = await figma.variables.getVariableByIdAsync(figmaId);
-      const collection = variable ? collectionsById.get(variable.variableCollectionId) : null;
-      const publishable = variable && !variable.remote
-        && !variable.hiddenFromPublishing
-        && collection
-        && !collection.hiddenFromPublishing;
-      if (!publishable) continue;
-      if (await safePublishStatus(variable) !== 'CURRENT') continue;
-      variables[canonicalId] = { key: variable.key, name: variable.name };
-    } catch {}
+  // Preserve the original, known-good rule: only CURRENT published variables
+  // become downstream bindings. Resolve publish status concurrently instead of
+  // changing the publication model to collection-level status.
+  const variableCandidates = Object.entries(registry.variables || {})
+    .map(([canonicalId, figmaId]) => ({ canonicalId, variable: variablesById.get(figmaId) }))
+    .filter(({ variable }) => {
+      if (!variable || variable.remote || variable.hiddenFromPublishing) return false;
+      const collection = collectionsById.get(variable.variableCollectionId);
+      return Boolean(collection && !collection.hiddenFromPublishing);
+    });
+
+  const variableResults = await Promise.all(variableCandidates.map(async ({ canonicalId, variable }) => ({
+    canonicalId,
+    variable,
+    status: requireCurrent ? await safePublishStatus(variable) : 'CURRENT'
+  })));
+  for (const { canonicalId, variable, status } of variableResults) {
+    if (status !== 'CURRENT') continue;
+    variables[canonicalId] = { key: variable.key, name: variable.name };
   }
 
-  for (const [canonicalId, figmaId] of Object.entries(registry.styles || {})) {
+  const styleResults = await Promise.all(Object.entries(registry.styles || {}).map(async ([canonicalId, figmaId]) => {
     try {
       const style = await figma.getStyleByIdAsync?.(figmaId);
-      if (!style || style.remote) continue;
-      if (await safePublishStatus(style) !== 'CURRENT') continue;
-      styles[canonicalId] = { key: style.key, name: style.name, type: style.type || null };
-    } catch {}
+      if (!style || style.remote) return null;
+      const status = requireCurrent ? await safePublishStatus(style) : 'CURRENT';
+      return { canonicalId, style, status };
+    } catch {
+      return null;
+    }
+  }));
+  for (const result of styleResults) {
+    if (!result || result.status !== 'CURRENT') continue;
+    styles[result.canonicalId] = { key: result.style.key, name: result.style.name, type: result.style.type || null };
   }
 
   return { variables, styles };
 }
 
 async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
-  const publishStatus = await assertLayerPublishedCurrent(layer);
+  // Any BufferCore master file must be claimable before it has publishable assets.
+  // Registration establishes the file identity first; publishing and re-registering
+  // later exposes the assets/bindings that downstream layers can consume.
+  const isMasterRegistration = role === 'master';
+  const isFoundationsMaster = isMasterRegistration && layer === 'foundations';
+  const publishStatus = isMasterRegistration
+    ? await currentLayerPublishStatus(layer)
+    : await assertLayerPublishedCurrent(layer);
   const identity = setSystemIdentity({ layer, role, flavourId });
   const definition = layerDefinition(layer);
 
-  if (role === 'master' && layer === 'foundations') {
-    const bindings = await publishedFoundationBindings();
+  if (isFoundationsMaster) {
+    const bindings = await publishedFoundationBindings({ requireCurrent: false });
     const payload = {
       schemaVersion: 1,
       role,
       layer,
       flavourId: null,
       fileName: figma.root.name || 'BC: Foundations',
+      fileKey: figma.fileKey || null,
       registeredAt: new Date().toISOString(),
       dependencies: definition.dependencies,
       bindings,
@@ -1086,6 +1486,7 @@ async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
       layer,
       flavourId,
       fileName: figma.root.name || `${flavourId}: Foundations`,
+      fileKey: figma.fileKey || null,
       registeredAt: new Date().toISOString(),
       dependencies: definition.dependencies,
       bindings,
@@ -1140,6 +1541,7 @@ async function registerCurrentSystemLayer({ layer, role, flavourId = null }) {
     layer,
     flavourId: role === 'flavour' ? flavourId : null,
     fileName: figma.root.name || `${role === 'master' ? 'BC' : flavourId}: ${definition.name}`,
+    fileKey: figma.fileKey || null,
     registeredAt: new Date().toISOString(),
     dependencies: definition.dependencies,
     bindings: { variables: {}, styles: {} },
@@ -1862,7 +2264,8 @@ function projectCanonicalIndexes(manifest) {
     if (definition.cssVariable) byCss.set(definition.cssVariable, definition.id);
   }
   const styleByName = new Map((manifest?.styles || []).map((style) => [normaliseFigmaName(style.name), style.id]));
-  return { byName, byCss, styleByName };
+  const byId = new Map((manifest?.variables || []).filter((item) => item?.id).map((item) => [item.id, item]));
+  return { byName, byCss, byId, styleByName };
 }
 
 function canonicalByPublishedKey(bindings = {}) {
@@ -1960,7 +2363,12 @@ function buildContextRemapCssPlan(manifest, domainId, sourceTargetId, destinatio
     }
 
     if (destinations.length > 1) {
-      ambiguous.push({ sourceCss, slots, destinations });
+      const resolvedDestination = resolveContextMappingAmbiguity(domainId, sourceCss, destinations);
+      if (!resolvedDestination) {
+        ambiguous.push({ sourceCss, slots, destinations });
+        continue;
+      }
+      if (sourceCss !== resolvedDestination) mappings[sourceCss] = resolvedDestination;
       continue;
     }
 
@@ -2153,45 +2561,138 @@ async function detectSelectionContextTargets(manifest) {
   };
 }
 
+async function localCanonicalVariables(manifest) {
+  const indexes = projectCanonicalIndexes(manifest);
+  const result = new Map();
+  const variables = await figma.variables.getLocalVariablesAsync();
+
+  for (const variable of variables) {
+    let canonicalId = variable.getPluginData?.(BUFFERCORE_KEYS.variableId) || null;
+
+    if (!canonicalId) {
+      const webSyntax = variable.codeSyntax?.WEB || null;
+      if (webSyntax) {
+        const match = String(webSyntax).match(/var\((--[^)]+)\)/);
+        if (match) canonicalId = indexes.byCss.get(match[1]) || null;
+      }
+    }
+
+    if (!canonicalId) canonicalId = indexes.byName.get(normaliseFigmaName(variable.name)) || null;
+    if (canonicalId && !result.has(canonicalId)) result.set(canonicalId, variable);
+  }
+
+  return result;
+}
+
 async function buildCoreContextRemapRuntime(manifest, domainId, sourceTargetId, destinationTargetId) {
   const plan = buildContextRemapCanonicalPlan(manifest, domainId, sourceTargetId, destinationTargetId);
+  const localVariables = await localCanonicalVariables(manifest);
   const family = await familyState();
-  const masterFoundations = family?.layers?.foundations?.master;
+  const masterFoundations = family?.layers?.foundations?.master || null;
 
-  if (!masterFoundations) {
-    throw new Error('BC: Foundations must be published and registered before Context Remap can import target variables.');
+  if (!localVariables.size && !masterFoundations) {
+    throw new Error(
+      'Context Remap needs BufferCore Foundation variables. Apply Core in this Foundations file, '
+      + 'or publish and register BC: Foundations for use from other files.'
+    );
+  }
+
+  const sourceFamilies = [];
+  if (masterFoundations) {
+    sourceFamilies.push({
+      variableKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.variables),
+      styleKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.styles)
+    });
   }
 
   return {
     plan,
     indexes: projectCanonicalIndexes(manifest),
-    sourceFamilies: [{
-      variableKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.variables),
-      styleKeyToCanonical: canonicalByPublishedKey(masterFoundations.bindings?.styles)
-    }],
+    sourceFamilies,
     masterFoundations,
-    importedVariables: new Map()
+    localVariables,
+    importedVariables: new Map(),
+    libraryVariablesByName: null,
+    libraryLookupAttempted: false
   };
+}
+
+async function ensureLibraryVariableIndex(runtime) {
+  if (runtime.libraryLookupAttempted) return runtime.libraryVariablesByName || new Map();
+  runtime.libraryLookupAttempted = true;
+  const byName = new Map();
+
+  try {
+    const collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+    for (const collection of collections || []) {
+      let variables = [];
+      try { variables = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(collection.key); } catch {}
+      for (const variable of variables || []) {
+        const name = normaliseFigmaName(variable?.name);
+        if (name && !byName.has(name)) byName.set(name, variable);
+      }
+    }
+  } catch {}
+
+  runtime.libraryVariablesByName = byName;
+  return byName;
 }
 
 async function coreContextTargetVariable(canonicalId, runtime, report) {
   if (runtime.importedVariables.has(canonicalId)) return runtime.importedVariables.get(canonicalId);
 
-  const item = runtime.masterFoundations.bindings?.variables?.[canonicalId];
-  if (!item?.key) {
-    report.unresolved += 1;
-    return null;
+  const local = runtime.localVariables?.get(canonicalId) || null;
+  if (local) {
+    runtime.importedVariables.set(canonicalId, local);
+    report.localVariablesUsed = (report.localVariablesUsed || 0) + 1;
+    return local;
   }
 
-  try {
-    const variable = await figma.variables.importVariableByKeyAsync(item.key);
-    runtime.importedVariables.set(canonicalId, variable);
-    report.variablesImported += 1;
-    return variable;
-  } catch (error) {
-    report.errors.push(`${canonicalId}: ${serialiseError(error)}`);
-    return null;
+  const item = runtime.masterFoundations?.bindings?.variables?.[canonicalId];
+  let registeredError = null;
+
+  if (item?.key) {
+    try {
+      const variable = await figma.variables.importVariableByKeyAsync(item.key);
+      runtime.importedVariables.set(canonicalId, variable);
+      report.variablesImported += 1;
+      return variable;
+    } catch (error) {
+      registeredError = error;
+    }
   }
+
+  // Foundation variables can be rebuilt during ordering/type migrations, which
+  // gives the published variable a new key. Recover from a stale registration
+  // by resolving the canonical variable by name from enabled Figma libraries.
+  const definition = runtime.indexes?.byId?.get(canonicalId) || null;
+  const expectedNames = [definition?.figmaName, definition?.name]
+    .map((name) => normaliseFigmaName(name))
+    .filter(Boolean);
+
+  if (expectedNames.length && figma.teamLibrary) {
+    const libraryByName = await ensureLibraryVariableIndex(runtime);
+    const libraryVariable = expectedNames.map((name) => libraryByName.get(name)).find(Boolean) || null;
+    if (libraryVariable?.key) {
+      try {
+        const variable = await figma.variables.importVariableByKeyAsync(libraryVariable.key);
+        runtime.importedVariables.set(canonicalId, variable);
+        report.variablesImported += 1;
+        report.staleKeysRecovered = (report.staleKeysRecovered || 0) + 1;
+        return variable;
+      } catch (error) {
+        registeredError = error;
+      }
+    }
+  }
+
+  report.unresolved += 1;
+  if (registeredError) {
+    report.errors.push(`${canonicalId}: published Foundations key could not be resolved (${serialiseError(registeredError)}). Publish/update BC: Foundations, or enable its variable library in this file.`);
+  } else {
+    report.errors.push(`${canonicalId}: no published Foundations variable is available. Publish/update BC: Foundations, or enable its variable library in this file.`);
+  }
+  return null;
 }
 
 async function coreContextMappedVariable(alias, runtime, report) {
@@ -2339,27 +2840,490 @@ function contextTargetLabel(manifest, domainId, targetId) {
   return String(targetId || '').replace(/(^|[-_\s])([a-z])/g, (_, prefix, char) => `${prefix}${char.toUpperCase()}`);
 }
 
-function contextSetGeneratedName(originalName, targetLabel) {
+function contextVariantPropertyNames(domainId) {
+  if (String(domainId || '').toLowerCase() === 'colour') return ['Colour', 'Color'];
+  const label = String(domainId || 'Context')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return [label];
+}
+
+function contextSetGeneratedName(originalName, targetLabel, domainId = 'colour') {
+  const propertyNames = contextVariantPropertyNames(domainId);
+  const variantName = upsertVariantNameProperty(originalName, propertyNames, targetLabel, propertyNames[0]);
+  if (variantName) return variantName;
+
   const base = String(originalName || 'Untitled').replace(/\s+\/\s+(Context|Neutral|Primary|Secondary|Accent|Success|Warning|Error|Info)$/i, '');
   return `${base} / ${targetLabel}`;
 }
 
-function canPositionGeneratedSibling(node) {
-  const parent = node?.parent;
-  if (!parent || parent.type === 'DOCUMENT' || parent.type === 'PAGE') return true;
-  if ('layoutMode' in parent && parent.layoutMode && parent.layoutMode !== 'NONE') return false;
-  return true;
+function generatedStateName(originalName, stateId = 'default') {
+  const stateLabel = generatedStateLabel(stateId);
+  const parsed = variantNameParts(originalName);
+  const hasStateProperty = Boolean(parsed?.parts?.some((part) => part.property.toLowerCase() === 'state'));
+
+  // A normal generated variant should not invent a State property when the
+  // authored component set does not use one. Disabled is different: it is an
+  // explicit state transform, so add State=Disabled using the set's existing
+  // comma/slash naming convention when necessary.
+  if (stateId === 'default' && !hasStateProperty) return String(originalName || 'Untitled');
+
+  const variantName = upsertVariantNameProperty(originalName, ['State'], stateLabel, 'State');
+  if (variantName) return variantName;
+
+  if (stateId === 'default') return String(originalName || 'Untitled');
+  const base = String(originalName || 'Untitled').replace(/\s+\/\s+(Default|Disabled)$/i, '');
+  return `${base} / ${stateLabel}`;
 }
 
-function positionGeneratedSibling(original, clone, index, gap = 24) {
-  if (!canPositionGeneratedSibling(clone)) return;
-  if (!('x' in original) || !('y' in original) || !('x' in clone) || !('y' in clone)) return;
+function normaliseGenerateLayoutOptions(options = {}) {
+  const layout = options.layout || {};
+  const mode = layout.mode === 'FLOW' ? 'FLOW' : 'GRID';
+  const paddingTop = Math.max(0, Number(layout.paddingTop) || 0);
+  const paddingRight = Math.max(0, Number(layout.paddingRight) || 0);
+  const paddingBottom = Math.max(0, Number(layout.paddingBottom) || 0);
+  const paddingLeft = Math.max(0, Number(layout.paddingLeft) || 0);
 
-  const width = Number(original.width) || 0;
-  try {
-    clone.x = original.x + ((width + gap) * index);
-    clone.y = original.y;
-  } catch {}
+  if (mode === 'GRID') {
+    const columns = Math.max(1, Math.round(Number(layout.columns) || 5));
+    const rowsMode = layout.rowsMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    const rows = Math.max(1, Math.round(Number(layout.rows) || 1));
+    const columnGap = Math.max(0, Number(layout.columnGap) || 0);
+    const rowGap = Math.max(0, Number(layout.rowGap) || 0);
+    const columnSizing = layout.columnSizing === 'FIXED' ? 'FIXED' : 'HUG';
+    const rowSizing = layout.rowSizing === 'FIXED' ? 'FIXED' : 'HUG';
+    const columnSize = Math.max(1, Number(layout.columnSize) || 1);
+    const rowSize = Math.max(1, Number(layout.rowSize) || 1);
+
+    return {
+      mode,
+      columns,
+      rowsMode,
+      rows,
+      columnGap,
+      rowGap,
+      columnSizing,
+      rowSizing,
+      columnSize,
+      rowSize,
+      paddingTop,
+      paddingRight,
+      paddingBottom,
+      paddingLeft
+    };
+  }
+
+  const direction = layout.direction === 'VERTICAL' ? 'VERTICAL' : 'HORIZONTAL';
+  const wrap = layout.wrap === true;
+  const widthMode = layout.widthMode === 'FIXED' ? 'FIXED' : 'AUTO';
+  const heightMode = layout.heightMode === 'FIXED' ? 'FIXED' : 'AUTO';
+  const width = Math.max(1, Number(layout.width) || 1);
+  const height = Math.max(1, Number(layout.height) || 1);
+  const itemSpacing = Math.max(0, Number(layout.itemSpacing) || 0);
+  const counterAxisSpacing = Math.max(0, Number(layout.counterAxisSpacing) || 0);
+  const primaryAxisAlignItems = ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'].includes(layout.primaryAxisAlignItems)
+    ? layout.primaryAxisAlignItems
+    : 'MIN';
+  const counterAxisAlignItems = ['MIN', 'CENTER', 'MAX', 'BASELINE'].includes(layout.counterAxisAlignItems)
+    ? layout.counterAxisAlignItems
+    : 'MIN';
+
+  if (wrap && direction === 'HORIZONTAL' && widthMode !== 'FIXED') {
+    throw new Error('Horizontal Auto Layout wrapping requires Width sizing = Fixed.');
+  }
+  if (wrap && direction === 'VERTICAL' && heightMode !== 'FIXED') {
+    throw new Error('Vertical Auto Layout wrapping requires Height sizing = Fixed.');
+  }
+
+  return {
+    mode,
+    direction,
+    wrap,
+    widthMode,
+    heightMode,
+    width,
+    height,
+    itemSpacing,
+    counterAxisSpacing,
+    paddingTop,
+    paddingRight,
+    paddingBottom,
+    paddingLeft,
+    primaryAxisAlignItems,
+    counterAxisAlignItems
+  };
+}
+
+
+function matrixMultiply(a, b) {
+  return [
+    [
+      (a[0][0] * b[0][0]) + (a[0][1] * b[1][0]),
+      (a[0][0] * b[0][1]) + (a[0][1] * b[1][1]),
+      (a[0][0] * b[0][2]) + (a[0][1] * b[1][2]) + a[0][2]
+    ],
+    [
+      (a[1][0] * b[0][0]) + (a[1][1] * b[1][0]),
+      (a[1][0] * b[0][1]) + (a[1][1] * b[1][1]),
+      (a[1][0] * b[0][2]) + (a[1][1] * b[1][2]) + a[1][2]
+    ]
+  ];
+}
+
+function matrixInverse(transform) {
+  const a = transform[0][0];
+  const c = transform[0][1];
+  const e = transform[0][2];
+  const b = transform[1][0];
+  const d = transform[1][1];
+  const f = transform[1][2];
+  const determinant = (a * d) - (b * c);
+
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) {
+    throw new Error('Unable to preserve generated artwork position because its parent transform is singular.');
+  }
+
+  const inverse = 1 / determinant;
+  return [
+    [d * inverse, -c * inverse, ((c * f) - (d * e)) * inverse],
+    [-b * inverse, a * inverse, ((b * e) - (a * f)) * inverse]
+  ];
+}
+
+function nodeAbsoluteTransform(node) {
+  // Page/Document nodes are the root coordinate space and do not expose the
+  // SceneNode absoluteTransform property. Treat them as the identity matrix.
+  if (node?.type === 'PAGE' || node?.type === 'DOCUMENT') {
+    return [[1, 0, 0], [0, 1, 0]];
+  }
+
+  const transform = node?.absoluteTransform;
+  if (!Array.isArray(transform) || !Array.isArray(transform[0]) || !Array.isArray(transform[1])) {
+    throw new Error(`${node?.name || node?.type || 'Node'} does not expose an absolute transform.`);
+  }
+  return [
+    [Number(transform[0][0]), Number(transform[0][1]), Number(transform[0][2])],
+    [Number(transform[1][0]), Number(transform[1][1]), Number(transform[1][2])]
+  ];
+}
+
+function setNodeAbsoluteTransform(node, absoluteTransform, parent = node?.parent) {
+  if (!node || !parent || !('relativeTransform' in node)) {
+    throw new Error(`${node?.name || node?.type || 'Node'} cannot have its absolute transform restored.`);
+  }
+
+  const parentAbsolute = nodeAbsoluteTransform(parent);
+  node.relativeTransform = matrixMultiply(matrixInverse(parentAbsolute), absoluteTransform);
+}
+
+function reparentPreservingAbsoluteTransform(node, parent) {
+  const absoluteTransform = nodeAbsoluteTransform(node);
+  parent.appendChild(node);
+  setNodeAbsoluteTransform(node, absoluteTransform, parent);
+  return absoluteTransform;
+}
+
+function releaseTemporaryGroup(group) {
+  const parent = group?.parent;
+  if (!parent || !('children' in group)) return [];
+
+  const children = [...group.children];
+  const absoluteTransforms = children.map((child) => nodeAbsoluteTransform(child));
+
+  for (let index = 0; index < children.length; index += 1) {
+    const child = children[index];
+    parent.appendChild(child);
+    setNodeAbsoluteTransform(child, absoluteTransforms[index], parent);
+  }
+
+  group.remove();
+  return children;
+}
+
+function variantStateProperty(name) {
+  const parsed = variantNameParts(name);
+  if (!parsed?.parts?.length) return null;
+  return parsed.parts.find((part) => part.property.toLowerCase() === 'state') || null;
+}
+
+function pruneGeneratedGroupToSourceState(group, stateId = 'default') {
+  if (!group || !('children' in group)) return { statePropertiesSeen: 0, matchingVariants: 0 };
+
+  const desired = generatedStateLabel(stateId).toLowerCase();
+  let statePropertiesSeen = 0;
+  let matchingVariants = 0;
+
+  const visit = (node) => {
+    const state = variantStateProperty(node?.name);
+    if (state) {
+      statePropertiesSeen += 1;
+      if (String(state.value || '').trim().toLowerCase() !== desired) {
+        try { node.remove(); } catch {}
+        return;
+      }
+      matchingVariants += 1;
+    }
+
+    if ('children' in (node || {})) {
+      for (const child of [...(node.children || [])]) visit(child);
+    }
+  };
+
+  for (const child of [...(group.children || [])]) visit(child);
+  return { statePropertiesSeen, matchingVariants };
+}
+
+function variantIdentityKey(name) {
+  const parsed = variantNameParts(name);
+  if (!parsed?.parts?.length) return null;
+  return parsed.parts
+    .map((part) => `${String(part.property || '').trim().toLowerCase()}=${String(part.value || '').trim().toLowerCase()}`)
+    .sort()
+    .join('|');
+}
+
+function collectExistingVariantKeys(nodes, stateId = null) {
+  const keys = new Set();
+  const desiredState = stateId ? generatedStateLabel(stateId).toLowerCase() : null;
+
+  const visit = (node) => {
+    const key = variantIdentityKey(node?.name);
+    if (key) {
+      const state = variantStateProperty(node?.name);
+      const stateValue = String(state?.value || '').trim().toLowerCase();
+      if (!desiredState || stateValue === desiredState) keys.add(key);
+    }
+    if ('children' in (node || {})) {
+      for (const child of node.children || []) visit(child);
+    }
+  };
+
+  for (const node of nodes || []) visit(node);
+  return keys;
+}
+
+function pruneGeneratedGroupAlreadyExisting(group, existingVariantKeys, stateId = 'disabled') {
+  if (!group || !('children' in group)) return { removed: 0, remaining: 0 };
+
+  const desiredState = generatedStateLabel(stateId).toLowerCase();
+  let removed = 0;
+  let remaining = 0;
+
+  const visit = (node) => {
+    const key = variantIdentityKey(node?.name);
+    const state = variantStateProperty(node?.name);
+    const isDesiredState = String(state?.value || '').trim().toLowerCase() === desiredState;
+
+    if (key && isDesiredState) {
+      if (existingVariantKeys?.has(key)) {
+        try { node.remove(); } catch {}
+        removed += 1;
+        return;
+      }
+      remaining += 1;
+    }
+
+    if ('children' in (node || {})) {
+      for (const child of [...(node.children || [])]) visit(child);
+    }
+  };
+
+  for (const child of [...(group.children || [])]) visit(child);
+  return { removed, remaining };
+}
+
+function renameGeneratedGroupChildren(group, targetLabel, stateId = 'default', domainId = 'colour') {
+  if (!group || !('children' in group)) return;
+
+  const visit = (node) => {
+    // Only rewrite genuine variant-style names. Wrapper frames/groups should
+    // keep their authored names while nested variants receive the generated
+    // Context value. The baseline/default generation preserves authored State
+    // values (Default, Hover, Active, etc.); an explicit generated state such
+    // as Disabled replaces State after the source set has been filtered.
+    const parsed = variantNameParts(node?.name);
+    if (parsed?.parts?.length) {
+      try {
+        const contextName = contextSetGeneratedName(node.name, targetLabel, domainId);
+        node.name = stateId && stateId !== 'default'
+          ? generatedStateName(contextName, stateId)
+          : contextName;
+      } catch {}
+    }
+
+    if ('children' in (node || {})) {
+      for (const child of node.children || []) visit(child);
+    }
+  };
+
+  for (const child of group.children || []) visit(child);
+}
+
+async function applyStateTransformToGeneratedGroup(group, manifest, stateId, runtime, report) {
+  if (!stateId || stateId === 'default') return true;
+  if (!group || !('children' in group)) return false;
+
+  let applied = true;
+  for (const child of group.children) {
+    const childApplied = await applyStateTransform(child, manifest, stateId, runtime, report);
+    applied = childApplied && applied;
+  }
+  return applied;
+}
+
+function applyGenerateFramePadding(frame, layout) {
+  frame.paddingTop = layout.paddingTop;
+  frame.paddingRight = layout.paddingRight;
+  frame.paddingBottom = layout.paddingBottom;
+  frame.paddingLeft = layout.paddingLeft;
+}
+
+function applyGridTrackSizing(tracks, sizing, size) {
+  for (const track of tracks || []) {
+    track.type = sizing === 'FIXED' ? 'FIXED' : 'HUG';
+    if (sizing === 'FIXED') track.value = size;
+  }
+}
+
+function applyNativeGenerateLayoutFrame(frame, layout) {
+  applyGenerateFramePadding(frame, layout);
+
+  if (layout.mode === 'GRID') {
+    frame.layoutMode = 'GRID';
+    // Figma's Plugin API creates Grid containers as FIXED with FLEX tracks,
+    // unlike the Design UI which defaults new grids to HUG. For generated
+    // variant banks we want the Design-UI behaviour: the temporary grid and
+    // its tracks hug the grouped artwork instead of stretching/compressing it.
+    frame.layoutSizingHorizontal = 'HUG';
+    frame.layoutSizingVertical = 'HUG';
+    frame.gridItemsPositioning = 'ROW_AUTO_FLOW';
+    frame.gridColumnCount = layout.columns;
+    frame.gridColumnGap = layout.columnGap;
+    frame.gridRowGap = layout.rowGap;
+
+    if (layout.rowsMode === 'AUTO') {
+      frame.gridAutoTracks = 'ROWS';
+    } else {
+      frame.gridAutoTracks = 'NONE';
+      frame.gridRowCount = layout.rows;
+    }
+
+    applyGridTrackSizing(frame.gridColumnSizes, layout.columnSizing, layout.columnSize);
+    applyGridTrackSizing(frame.gridRowSizes, layout.rowSizing, layout.rowSize);
+    return;
+  }
+
+  frame.layoutMode = layout.direction;
+  frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP';
+  frame.itemSpacing = layout.itemSpacing;
+  if (layout.wrap && 'counterAxisSpacing' in frame) frame.counterAxisSpacing = layout.counterAxisSpacing;
+  frame.primaryAxisAlignItems = layout.primaryAxisAlignItems;
+  frame.counterAxisAlignItems = layout.counterAxisAlignItems;
+
+  if (layout.direction === 'HORIZONTAL') {
+    frame.primaryAxisSizingMode = layout.widthMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    frame.counterAxisSizingMode = layout.heightMode === 'FIXED' ? 'FIXED' : 'AUTO';
+  } else {
+    frame.primaryAxisSizingMode = layout.heightMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    frame.counterAxisSizingMode = layout.widthMode === 'FIXED' ? 'FIXED' : 'AUTO';
+  }
+
+  if (layout.widthMode === 'FIXED' || layout.heightMode === 'FIXED') {
+    const width = layout.widthMode === 'FIXED' ? layout.width : Math.max(1, Number(frame.width) || 1);
+    const height = layout.heightMode === 'FIXED' ? layout.height : Math.max(1, Number(frame.height) || 1);
+    frame.resize(width, height);
+  }
+}
+
+function arrangeGroupsWithNativeLayout(parent, originalGroup, generatedGroups, options = {}) {
+  const layout = normaliseGenerateLayoutOptions(options);
+  const originalAbsolute = nodeAbsoluteTransform(originalGroup);
+  const frame = figma.createFrame();
+  frame.name = layout.mode === 'GRID'
+    ? '__BufferCore Generate Grid__'
+    : '__BufferCore Generate Auto Layout__';
+  frame.fills = [];
+  frame.clipsContent = false;
+  parent.appendChild(frame);
+
+  if ('layoutPositioning' in frame && 'layoutMode' in parent && parent.layoutMode && parent.layoutMode !== 'NONE') {
+    frame.layoutPositioning = 'ABSOLUTE';
+  }
+
+  // BufferCore only orchestrates a real Figma layout container. It never
+  // calculates sibling positions, grid cells, rows or wrapping itself.
+  applyNativeGenerateLayoutFrame(frame, layout);
+
+  const items = [originalGroup, ...generatedGroups];
+  for (const item of items) {
+    frame.appendChild(item);
+
+    if (!('layoutPositioning' in item)) {
+      throw new Error(`${item.name || item.type || 'Generated item'} cannot participate in Figma layout.`);
+    }
+
+    item.layoutPositioning = 'AUTO';
+    if (item.layoutPositioning !== 'AUTO') {
+      throw new Error(`${item.name || item.type || 'Generated item'} was not accepted as a Figma layout child.`);
+    }
+  }
+
+  // Grid automatic rows are created while children are appended. Re-apply the
+  // native settings so newly-created tracks receive the requested sizing too.
+  applyNativeGenerateLayoutFrame(frame, layout);
+
+  const flowedItems = items.filter((item) => item.layoutPositioning === 'AUTO');
+  if (flowedItems.length !== items.length) {
+    throw new Error(`Figma layout accepted ${flowedItems.length} of ${items.length} generated items.`);
+  }
+
+  // Translate the temporary container so the original grouped source returns
+  // to its exact absolute position after Figma has resolved the layout.
+  const laidOutSourceAbsolute = nodeAbsoluteTransform(originalGroup);
+  const frameAbsolute = nodeAbsoluteTransform(frame);
+  const anchoredFrameAbsolute = [
+    [frameAbsolute[0][0], frameAbsolute[0][1], frameAbsolute[0][2] + (originalAbsolute[0][2] - laidOutSourceAbsolute[0][2])],
+    [frameAbsolute[1][0], frameAbsolute[1][1], frameAbsolute[1][2] + (originalAbsolute[1][2] - laidOutSourceAbsolute[1][2])]
+  ];
+  setNodeAbsoluteTransform(frame, anchoredFrameAbsolute, parent);
+
+  // Preserve Figma's resolved positions while dismantling the temporary
+  // layout frame. The final canvas contains no BufferCore wrapper/layout node.
+  const resolvedAbsoluteTransforms = items.map((item) => nodeAbsoluteTransform(item));
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    parent.appendChild(item);
+    setNodeAbsoluteTransform(item, resolvedAbsoluteTransforms[index], parent);
+  }
+
+  const diagnostics = layout.mode === 'GRID'
+    ? {
+        nativeLayout: true,
+        layoutMode: 'GRID',
+        itemCount: items.length,
+        flowItemCount: flowedItems.length,
+        absoluteItemCount: items.length - flowedItems.length,
+        columns: frame.gridColumnCount,
+        rows: frame.gridRowCount,
+        autoRows: frame.gridAutoTracks === 'ROWS',
+        columnGap: frame.gridColumnGap,
+        rowGap: frame.gridRowGap
+      }
+    : {
+        nativeLayout: true,
+        layoutMode: frame.layoutMode,
+        itemCount: items.length,
+        flowItemCount: flowedItems.length,
+        absoluteItemCount: items.length - flowedItems.length,
+        wrap: frame.layoutWrap,
+        width: Number(frame.width) || 0,
+        height: Number(frame.height) || 0,
+        itemSpacing: Number(frame.itemSpacing) || 0,
+        counterAxisSpacing: Number(frame.counterAxisSpacing) || 0
+      };
+
+  frame.remove();
+  return { layout, diagnostics };
 }
 
 
@@ -2383,6 +3347,7 @@ async function buildStateTransformRuntime(manifest, stateIds = []) {
   const runtime = {
     requested,
     variables: new Map(),
+    localVariables: new Map(),
     foundationBindings: null
   };
 
@@ -2393,6 +3358,8 @@ async function buildStateTransformRuntime(manifest, stateIds = []) {
       throw new Error(`The active Foundation manifest does not expose the ${stateId} state semantic.`);
     }
   }
+
+  runtime.localVariables = await localCanonicalVariables(manifest);
 
   const activeProject = projectThemeIdentity();
   if (activeProject?.flavourId) {
@@ -2408,16 +3375,15 @@ async function buildStateTransformRuntime(manifest, stateIds = []) {
     runtime.foundationBindings = family?.layers?.foundations?.master || null;
   }
 
-  if (!runtime.foundationBindings) {
-    throw new Error('A published and registered BufferCore Foundations library is required before applying generated states.');
-  }
-
   for (const stateId of requested) {
     const canonicalId = stateSemanticCanonicalId(manifest, stateId);
-    if (!runtime.foundationBindings.bindings?.variables?.[canonicalId]?.key) {
+    const hasLocal = Boolean(runtime.localVariables.get(canonicalId));
+    const hasPublished = Boolean(runtime.foundationBindings?.bindings?.variables?.[canonicalId]?.key);
+
+    if (!hasLocal && !hasPublished) {
       throw new Error(
-        `The current Foundation build contains ${stateId}, but the registered published Foundations library is out of date. `
-        + `Rebuild BC: Foundations, publish it in Figma, then register Master Foundations again.`
+        `The current Foundation build contains ${stateId}, but no usable Foundation variable is available. `
+        + `Apply Core in this Foundations file, or publish and register BC: Foundations for use from other files.`
       );
     }
   }
@@ -2429,6 +3395,13 @@ async function stateTransformVariable(manifest, stateId, runtime, report) {
   if (runtime.variables.has(stateId)) return runtime.variables.get(stateId);
 
   const canonicalId = stateSemanticCanonicalId(manifest, stateId);
+  const local = canonicalId ? runtime.localVariables?.get(canonicalId) : null;
+  if (local) {
+    runtime.variables.set(stateId, local);
+    report.localVariablesUsed = (report.localVariablesUsed || 0) + 1;
+    return local;
+  }
+
   const item = runtime.foundationBindings?.bindings?.variables?.[canonicalId];
 
   if (!canonicalId || !item?.key) {
@@ -2474,21 +3447,32 @@ async function applyStateTransform(node, manifest, stateId, runtime, report) {
   return false;
 }
 
+function selectionSharedParent(selection) {
+  const nodes = Array.isArray(selection) ? selection.filter(Boolean) : [];
+  if (!nodes.length) return null;
+
+  const parent = nodes[0]?.parent || null;
+  if (!parent) return null;
+
+  return nodes.every((node) => node?.parent === parent) ? parent : null;
+}
+
 function generatedStateLabel(stateId) {
   return stateId === 'disabled' ? 'Disabled' : 'Default';
 }
 
 function disabledCopyName(originalName) {
-  const base = String(originalName || 'Untitled').replace(/\s+\/\s+Disabled$/i, '');
-  return `${base} / Disabled`;
+  return generatedStateName(originalName, 'disabled');
 }
 
 async function generateDisabledCopies(manifest, options = {}) {
   const selection = [...(figma.currentPage.selection || [])];
   if (!selection.length) throw new Error('Select at least one object or component before creating a Disabled copy.');
 
+  const parent = selectionSharedParent(selection);
+  if (!parent) throw new Error('Generate requires the selected source layers to share the same parent.');
+
   const stateRuntime = await buildStateTransformRuntime(manifest, ['disabled']);
-  const generated = [];
   const report = {
     sourceCount: selection.length,
     generatedCount: 0,
@@ -2498,31 +3482,51 @@ async function generateDisabledCopies(manifest, options = {}) {
     errors: []
   };
 
-  for (const original of selection) {
-    if (typeof original.clone !== 'function') {
-      report.errors.push(`${original.name || original.type}: this node cannot be cloned.`);
-      continue;
+  let originalGroup = null;
+  let generatedGroup = null;
+  let generated = [];
+
+  try {
+    originalGroup = figma.group(selection, parent);
+    originalGroup.name = '__BufferCore Generate Source__';
+
+    generatedGroup = originalGroup.clone();
+    generatedGroup.name = '__BufferCore Generate Disabled__';
+
+    for (const child of generatedGroup.children || []) {
+      try { child.name = disabledCopyName(child.name); } catch {}
     }
 
-    let clone;
-    try {
-      clone = original.clone();
-      clone.name = disabledCopyName(original.name);
-      positionGeneratedSibling(original, clone, 1);
-    } catch (error) {
-      report.errors.push(`${original.name || original.type}: ${serialiseError(error)}`);
-      try { clone?.remove(); } catch {}
-      continue;
-    }
+    const applied = await applyStateTransformToGeneratedGroup(
+      generatedGroup,
+      manifest,
+      'disabled',
+      stateRuntime,
+      report
+    );
 
-    const applied = await applyStateTransform(clone, manifest, 'disabled', stateRuntime, report);
     if (!applied) {
-      try { clone.remove(); } catch {}
-      continue;
+      try { generatedGroup.remove(); } catch {}
+      generatedGroup = null;
+      throw new Error('Unable to apply the Disabled state to the generated copy.');
     }
 
-    generated.push(clone);
-    report.generatedCount += 1;
+    const arrangement = arrangeGroupsWithNativeLayout(parent, originalGroup, [generatedGroup], options);
+    report.layout = arrangement.diagnostics;
+
+    generated = releaseTemporaryGroup(generatedGroup);
+    releaseTemporaryGroup(originalGroup);
+    generatedGroup = null;
+    originalGroup = null;
+
+    report.generatedCount = generated.length;
+  } catch (error) {
+    report.errors.push(serialiseError(error));
+
+    // Recovery: release any temporary groups rather than leaving the user's
+    // source trapped in BufferCore scaffolding.
+    try { if (generatedGroup?.parent) releaseTemporaryGroup(generatedGroup); } catch {}
+    try { if (originalGroup?.parent) releaseTemporaryGroup(originalGroup); } catch {}
   }
 
   if (generated.length) {
@@ -2546,6 +3550,9 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
   const selection = [...(figma.currentPage.selection || [])];
   if (!selection.length) throw new Error('Select at least one object or component before generating a Context set.');
 
+  const parent = selectionSharedParent(selection);
+  if (!parent) throw new Error('Generate requires the selected source layers to share the same parent.');
+
   const targets = [...new Set((destinationTargetIds || []).filter(Boolean))]
     .filter((targetId) => targetId !== sourceTargetId);
 
@@ -2562,13 +3569,15 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
   const domain = contextDomain(manifest, domainId);
   if (!domain) throw new Error(`Unknown Context domain: ${domainId}.`);
 
+  // Validate every requested mapping before we touch the document.
   for (const targetId of targets) {
     buildContextRemapCanonicalPlan(manifest, domainId, sourceTargetId, targetId);
   }
 
   const stateRuntime = await buildStateTransformRuntime(manifest, stateIds);
-
+  const existingDisabledVariantKeys = collectExistingVariantKeys(selection, 'disabled');
   const generated = [];
+  const generatedGroups = [];
   const totals = {
     sourceCount: selection.length,
     generatedCount: 0,
@@ -2579,16 +3588,96 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
     unresolved: 0,
     ambiguousMappings: 0,
     unavailableMappings: 0,
+    skippedExisting: 0,
     errors: []
   };
 
-  for (const original of selection) {
-    let generatedIndex = 1;
+  let originalGroup = null;
+
+  try {
+    // Generate always works with one temporary top-level object, even when the
+    // source selection contains a single node. That keeps the native Auto
+    // Layout path identical for one or many selected layers.
+    originalGroup = figma.group(selection, parent);
+    originalGroup.name = '__BufferCore Generate Source__';
+
+    // The source Context already exists as the authored Default artwork, so we
+    // do not duplicate it for State=Default. When Disabled is requested,
+    // however, Generate must also create the Disabled counterpart for the
+    // source Context itself (for example Primary + Primary Disabled), not only
+    // Disabled copies of destination Contexts.
+    const sourceGeneratedStateIds = stateIds.filter((stateId) => stateId !== 'default');
+    if (sourceGeneratedStateIds.length) {
+      const sourceLabel = contextTargetLabel(manifest, domainId, sourceTargetId);
+
+      for (const stateId of sourceGeneratedStateIds) {
+        let cloneGroup;
+        try {
+          cloneGroup = originalGroup.clone();
+          cloneGroup.name = `__BufferCore Generate ${sourceLabel} ${generatedStateLabel(stateId)}__`;
+
+          if (stateId !== 'default') {
+            const sourceState = pruneGeneratedGroupToSourceState(cloneGroup, 'default');
+            if (sourceState.statePropertiesSeen > 0 && sourceState.matchingVariants === 0) {
+              try { cloneGroup.remove(); } catch {}
+              throw new Error(`No State=Default variants were selected to derive ${generatedStateLabel(stateId)} from.`);
+            }
+          }
+
+          renameGeneratedGroupChildren(cloneGroup, sourceLabel, stateId, domainId);
+
+          if (stateId === 'disabled') {
+            const dedupe = pruneGeneratedGroupAlreadyExisting(cloneGroup, existingDisabledVariantKeys, 'disabled');
+            totals.skippedExisting += dedupe.removed;
+            if (dedupe.remaining === 0) {
+              try { cloneGroup.remove(); } catch {}
+              continue;
+            }
+          }
+
+          const report = {
+            nodesScanned: 0,
+            rebound: 0,
+            stateBindings: 0,
+            variablesImported: 0,
+            unresolved: 0,
+            ambiguousMappings: 0,
+            unavailableMappings: 0,
+            errors: []
+          };
+
+          const stateApplied = await applyStateTransformToGeneratedGroup(
+            cloneGroup,
+            manifest,
+            stateId,
+            stateRuntime,
+            report
+          );
+
+          if (!stateApplied) {
+            totals.errors.push(...report.errors);
+            try { cloneGroup.remove(); } catch {}
+            continue;
+          }
+
+          totals.nodesScanned += report.nodesScanned;
+          totals.rebound += report.rebound;
+          totals.stateBindings += report.stateBindings;
+          totals.variablesImported += report.variablesImported;
+          totals.unresolved += report.unresolved;
+          totals.errors.push(...report.errors);
+          generatedGroups.push(cloneGroup);
+        } catch (error) {
+          totals.errors.push(`${sourceLabel} / ${generatedStateLabel(stateId)}: ${serialiseError(error)}`);
+          try { cloneGroup?.remove(); } catch {}
+        }
+      }
+    }
 
     for (const targetId of targets) {
       const targetLabel = contextTargetLabel(manifest, domainId, targetId);
-
       let remapRuntime;
+
       try {
         remapRuntime = await buildCoreContextRemapRuntime(manifest, domainId, sourceTargetId, targetId);
       } catch (error) {
@@ -2596,29 +3685,51 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
         continue;
       }
 
+      // A normal colour clone preserves the authored state matrix, including any
+      // Disabled variants that already exist. Track those translated Disabled
+      // identities so the explicit Disabled pass only fills genuinely missing
+      // slots instead of creating a second Disabled row.
+      const carriedDisabledVariantKeys = new Set();
+
       for (const stateId of stateIds) {
-        if (typeof original.clone !== 'function') {
-          totals.errors.push(`${original.name || original.type}: this node cannot be cloned.`);
-          continue;
-        }
-
-        let clone;
+        let cloneGroup;
         try {
-          clone = original.clone();
+          cloneGroup = originalGroup.clone();
+          cloneGroup.name = `__BufferCore Generate ${targetLabel} ${generatedStateLabel(stateId)}__`;
+
+          if (stateId !== 'default') {
+            const sourceState = pruneGeneratedGroupToSourceState(cloneGroup, 'default');
+            if (sourceState.statePropertiesSeen > 0 && sourceState.matchingVariants === 0) {
+              try { cloneGroup.remove(); } catch {}
+              throw new Error(`No State=Default variants were selected to derive ${generatedStateLabel(stateId)} from.`);
+            }
+          }
+
+          renameGeneratedGroupChildren(cloneGroup, targetLabel, stateId, domainId);
+
+          if (stateId === 'default') {
+            // The baseline colour clone carries every authored interaction state.
+            // If it already carries Disabled for a Size/Content/etc combination,
+            // remember that translated target identity before the explicit
+            // Disabled pass runs.
+            for (const key of collectExistingVariantKeys([cloneGroup], 'disabled')) {
+              carriedDisabledVariantKeys.add(key);
+            }
+          }
+
+          if (stateId === 'disabled') {
+            const disabledKeys = new Set([...existingDisabledVariantKeys, ...carriedDisabledVariantKeys]);
+            const dedupe = pruneGeneratedGroupAlreadyExisting(cloneGroup, disabledKeys, 'disabled');
+            totals.skippedExisting += dedupe.removed;
+            if (dedupe.remaining === 0) {
+              try { cloneGroup.remove(); } catch {}
+              continue;
+            }
+          }
         } catch (error) {
-          totals.errors.push(`${original.name || original.type}: ${serialiseError(error)}`);
+          totals.errors.push(`${targetLabel} / ${generatedStateLabel(stateId)}: ${serialiseError(error)}`);
           continue;
         }
-
-        try {
-          const defaultName = contextSetGeneratedName(original.name, targetLabel);
-          clone.name = stateId === 'disabled'
-            ? `${defaultName} / ${generatedStateLabel(stateId)}`
-            : defaultName;
-        } catch {}
-
-        positionGeneratedSibling(original, clone, generatedIndex);
-        generatedIndex += 1;
 
         try {
           const report = {
@@ -2632,10 +3743,10 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
             errors: []
           };
 
-          await remapContextNode(clone, remapRuntime, report);
+          await remapContextNode(cloneGroup, remapRuntime, report);
 
-          const stateApplied = await applyStateTransform(
-            clone,
+          const stateApplied = await applyStateTransformToGeneratedGroup(
+            cloneGroup,
             manifest,
             stateId,
             stateRuntime,
@@ -2644,7 +3755,7 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
 
           if (!stateApplied) {
             totals.errors.push(...report.errors);
-            try { clone.remove(); } catch {}
+            try { cloneGroup.remove(); } catch {}
             continue;
           }
 
@@ -2657,14 +3768,39 @@ async function generateContextSet(manifest, domainId, sourceTargetId, destinatio
           totals.unavailableMappings += report.unavailableMappings;
           totals.errors.push(...report.errors);
 
-          generated.push(clone);
-          totals.generatedCount += 1;
+          generatedGroups.push(cloneGroup);
         } catch (error) {
           totals.errors.push(`${targetLabel} / ${generatedStateLabel(stateId)}: ${serialiseError(error)}`);
-          try { clone.remove(); } catch {}
+          try { cloneGroup.remove(); } catch {}
         }
       }
     }
+
+    if (!generatedGroups.length) {
+      throw new Error('No generated variants were created.');
+    }
+
+    // This is the only layout step. BufferCore does not calculate rows,
+    // columns, wrapping or sibling coordinates: the groups are inserted into
+    // one real Figma Grid/Auto Layout frame and Figma resolves the layout.
+    const arrangement = arrangeGroupsWithNativeLayout(parent, originalGroup, generatedGroups, options);
+    totals.layout = arrangement.diagnostics;
+
+    for (const group of generatedGroups) generated.push(...releaseTemporaryGroup(group));
+    releaseTemporaryGroup(originalGroup);
+    originalGroup = null;
+    generatedGroups.length = 0;
+
+    totals.generatedCount = generated.length;
+  } catch (error) {
+    totals.errors.push(serialiseError(error));
+
+    // Best-effort cleanup so a failed Generate never strands authored artwork
+    // inside our temporary groups.
+    for (const group of [...generatedGroups]) {
+      try { if (group?.parent) releaseTemporaryGroup(group); } catch {}
+    }
+    try { if (originalGroup?.parent) releaseTemporaryGroup(originalGroup); } catch {}
   }
 
   if (generated.length) {
@@ -2784,7 +3920,9 @@ async function buildFlavourExtensionRuntime(manifest, extensionId, direction) {
     indexes: projectCanonicalIndexes(manifest),
     sourceFamilies,
     targetFoundations: flavourFoundations,
-    importedVariables: new Map()
+    importedVariables: new Map(),
+    libraryVariablesByName: null,
+    libraryLookupAttempted: false
   };
 }
 
@@ -3471,8 +4609,10 @@ async function apply(manifest) {
     createdVariables: 0,
     updatedVariables: 0,
     migratedVariables: 0,
+    reorderedVariables: 0,
     removedLegacyVariables: 0,
     removedRetiredVariables: 0,
+    removedOrphanedVariables: 0,
     removedLegacyCollections: 0,
     literalValuesSet: 0,
     aliasesSet: 0,
@@ -3484,6 +4624,7 @@ async function apply(manifest) {
     warnings: []
   };
   const collections = await ensureCollections(desired, result);
+  await ensureSemanticColourPresentationOrder(desired, collections, result);
   const ensured = await ensureVariables(desired, collections, result);
   const variables = ensured.variables;
   applyVariableValues(desired, collections, variables, result);
@@ -3491,6 +4632,7 @@ async function apply(manifest) {
   await ensureStyles(desired, variables, result);
   cleanupMigratedVariables(ensured.obsoleteVariables, result);
   await cleanupRetiredVariables(desired, result);
+  await cleanupOrphanedVariables(desired, result);
   await cleanupLegacyCollections(result);
   await stampAppliedState(desired);
   stampLibraryTarget(manifest);
@@ -3521,10 +4663,27 @@ figma.ui.onmessage = async (message) => {
       figma.ui.postMessage({ type: 'plugin-settings', payload: await writePluginSettings(message.settings || {}) });
       return;
     }
-    if (message?.type === 'resize-window') {
-      const width = Math.max(520, Math.min(1400, Number(message.width) || 680));
-      const height = Math.max(420, Math.min(1400, Number(message.height) || 760));
-      figma.ui.resize(Math.round(width), Math.round(height));
+    if (message?.type === 'window-size-apply') {
+      const size = applyWindowSize(message.width, message.height);
+      await writePluginSettings({ windowWidth: size.width, windowHeight: size.height });
+      return;
+    }
+    if (message?.type === 'window-resize-live') {
+      applyWindowSize(message.width, message.height);
+      return;
+    }
+    if (message?.type === 'window-resize-commit') {
+      const size = applyWindowSize(message.width, message.height);
+      await writePluginSettings({ windowWidth: size.width, windowHeight: size.height });
+      figma.ui.postMessage({ type: 'plugin-settings', payload: await readPluginSettings() });
+      return;
+    }
+    if (message?.type === 'open-registered-file') {
+      const fileKey = typeof message.fileKey === 'string' ? message.fileKey.trim() : '';
+      if (!fileKey || !/^[A-Za-z0-9_-]+$/.test(fileKey)) {
+        throw new Error('This registered file does not have a valid Figma file key. Re-register it once to enable opening.');
+      }
+      figma.openExternal(`https://www.figma.com/design/${encodeURIComponent(fileKey)}`);
       return;
     }
     if (message?.type === 'bridge-request') {
@@ -3587,6 +4746,7 @@ figma.ui.onmessage = async (message) => {
         type: 'file-context',
         payload: {
           fileName: figma.root.name || '',
+          fileKey: figma.fileKey || null,
           system: currentSystemIdentity(),
           project: projectThemeIdentity()
         }
@@ -3637,7 +4797,8 @@ figma.ui.onmessage = async (message) => {
           message.destinationTargetIds || [],
           {
             stateIds: message.stateIds || ['default'],
-            focusResults: message.focusResults !== false
+            focusResults: message.focusResults !== false,
+            layout: message.layout || {}
           }
         )
       });
@@ -3648,7 +4809,7 @@ figma.ui.onmessage = async (message) => {
         type: 'context-generate-disabled-result',
         payload: await generateDisabledCopies(
           message.manifest || {},
-          { focusResults: message.focusResults !== false }
+          { focusResults: message.focusResults !== false, layout: message.layout || {} }
         )
       });
       return;

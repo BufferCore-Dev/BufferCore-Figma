@@ -118,6 +118,7 @@ function registerLibraryLayer(payload) {
     layer,
     flavourId: role === 'flavour' ? payload.flavourId : null,
     fileName: payload.fileName || null,
+    fileKey: payload.fileKey || null,
     registeredAt: payload.registeredAt || new Date().toISOString(),
     dependencies: Array.isArray(payload.dependencies) ? payload.dependencies : [],
     bindings: payload.bindings || { variables: {}, styles: {} },

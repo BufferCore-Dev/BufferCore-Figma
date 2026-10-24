@@ -8,6 +8,7 @@
     "figma"
   ],
   "documentAccess": "dynamic-page",
+  "enablePrivatePluginApi": true,
   "networkAccess": {
     "allowedDomains": [
       "none"
@@ -15,5 +16,8 @@
     "devAllowedDomains": [
       "http://localhost:3847"
     ]
-  }
+  },
+  "permissions": [
+    "teamlibrary"
+  ]
 }

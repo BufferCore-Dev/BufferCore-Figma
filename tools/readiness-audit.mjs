@@ -68,6 +68,38 @@ const diagnostics = manifest.diagnostics || { errors: [], warnings: [] };
 assert(!(diagnostics.errors || []).length, `Figma manifest has ${diagnostics.errors.length} error(s).`);
 assert(!(diagnostics.warnings || []).length, `Figma manifest has ${diagnostics.warnings.length} warning(s).`);
 
+
+const primitiveVariables = variables.filter((variable) => variable.layer === 'primitive');
+assert(primitiveVariables.every((variable) => variable.publish === false), 'Every Primitive variable must be hidden from publishing.');
+assert(primitiveVariables.every((variable) => (variable.scopes || []).length === 0), 'Every Primitive variable must be hidden from all Figma property pickers.');
+
+const publishedSemanticVariables = variables.filter((variable) => variable.layer === 'semantic' && variable.publish !== false);
+assert(publishedSemanticVariables.every((variable) => (variable.scopes || []).length > 0), 'Every published Semantic variable must have an explicit purpose-led Figma scope.');
+
+const semanticById = new Map(variables.filter((variable) => variable.layer === 'semantic').map((variable) => [variable.id, variable]));
+const assertScopes = (id, expected) => {
+  const variable = semanticById.get(id);
+  assert(variable, `Missing semantic variable ${id}.`);
+  assert(stableStringify(variable.scopes || []) === stableStringify(expected), `${id} has wrong Figma scopes: ${(variable.scopes || []).join(', ')}.`);
+};
+
+for (const variable of variables.filter((item) => item.layer === 'semantic' && item.foundation === 'colour')) {
+  const path = variable.path || [];
+  const root = path[1];
+  let expected = null;
+  if (root === 'text') expected = ['ALL_FILLS', 'STROKE_COLOR'];
+  else if (root === 'fill' || root === 'surface' || ['primary','secondary','accent'].includes(root)) expected = ['FRAME_FILL', 'SHAPE_FILL'];
+  else if (root === 'canvas') expected = ['FRAME_FILL'];
+  else if (root === 'border' || root === 'focus') expected = ['STROKE_COLOR'];
+  else if (root === 'link') expected = ['TEXT_FILL', 'SHAPE_FILL'];
+  else if (root === 'placeholder') expected = ['TEXT_FILL'];
+  else if (root === 'shadow') expected = ['EFFECT_COLOR'];
+  if (expected) assert(stableStringify(variable.scopes || []) === stableStringify(expected), `${variable.id} has wrong Colour picker scopes.`);
+}
+
+const unpublishedSemanticFoundations = new Set(['breakpoints', 'motion', 'z-index']);
+assert(variables.filter((variable) => variable.layer === 'semantic' && unpublishedSemanticFoundations.has(variable.foundation)).every((variable) => variable.publish === false), 'Non-bindable semantic Foundations must stay hidden from publishing.');
+
 const colourVariables = variables.filter((variable) => variable.foundation === 'colour');
 assert(colourVariables.length > 0, 'No Colour variables were generated.');
 assert(colourVariables.every((variable) => variable.type === 'COLOR'), 'Every generated Colour variable must use Figma COLOR type.');
@@ -182,6 +214,8 @@ console.log(`Generated               : ${manifest.generatedAt || 'unknown'}`);
 console.log(`Collections             : ${collections.length}`);
 console.log(`Variables               : ${variables.length}`);
 console.log(`Colour variables        : ${colourVariables.length} (all COLOR)`);
+console.log(`Primitive visibility    : ${primitiveVariables.length} hidden from pickers + publishing`);
+console.log(`Published semantics     : ${publishedSemanticVariables.length} purpose-scoped`);
 console.log(`Text styles             : ${textStyles.length}`);
 console.log(`Effect styles           : ${effectStyles.length}`);
 console.log(`Context projections     : Colour variables / Typography Text Styles / Shadow Effect Styles`);

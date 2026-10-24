@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { buildFigmaManifest, validateFigmaManifest } from "../packages/figma-schema/src/index.mjs";
+import { buildFigmaManifest, validateFigmaManifest, disambiguateFigmaHierarchyLeaves } from "../packages/figma-schema/src/index.mjs";
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 const figmaRoot = path.resolve(testsDir, "..");
@@ -82,12 +82,48 @@ test("splits collections by layer and Foundation with a deterministic visual div
   assert.equal(manifest.variables.find((item) => item.id === "radius.sm").collectionId, "primitive.radius");
 });
 
-test("number tokens with opacity intent receive the Figma OPACITY scope", () => {
+test("primitive variables are hidden from Figma pickers and publishing", () => {
   const canonicalPath = writeCanonical(canonicalFixture([
-    token({ id: "overlay.opacity", cssVariable: "--bc-overlay-opacity", foundation: "effects", path: ["overlay", "opacity"], valueType: "number", value: "80", unit: null })
+    token({ id: "opacity.80", cssVariable: "--bc-opacity-80", foundation: "effects", path: ["opacity", "80"], valueType: "number", value: "0.8", unit: null })
   ]));
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
-  assert.deepEqual(manifest.variables[0].scopes, ["OPACITY"]);
+  assert.deepEqual(manifest.variables[0].scopes, []);
+  assert.equal(manifest.variables[0].publish, false);
+  assert.equal(manifest.collections[0].publish, false);
+});
+
+test("semantic variables use purpose-led Figma picker scopes", () => {
+  const colourPrimitive = token({ id: "color.brand", cssVariable: "--bc-color-brand", foundation: "colour", path: ["color", "brand"], valueType: "color", value: "#6633ff", unit: null });
+  const dimensionPrimitive = token({ id: "size.16", cssVariable: "--bc-size-16", foundation: "sizing", path: ["size", "16"], valueType: "dimension", value: "16px", unit: "px" });
+
+  const specs = [
+    ["color.text.primary", "--bc-color-text-primary", "colour", ["color", "text", "primary"], "color", colourPrimitive, ["ALL_FILLS", "STROKE_COLOR"]],
+    ["color.fill.primary", "--bc-color-fill-primary", "colour", ["color", "fill", "primary"], "color", colourPrimitive, ["FRAME_FILL", "SHAPE_FILL"]],
+    ["color.border.primary", "--bc-color-border-primary", "colour", ["color", "border", "primary"], "color", colourPrimitive, ["STROKE_COLOR"]],
+    ["radius.control", "--bc-radius-control", "radius", ["radius", "control"], "dimension", dimensionPrimitive, ["CORNER_RADIUS"]],
+    ["size.control", "--bc-size-control", "sizing", ["size", "control"], "dimension", dimensionPrimitive, ["WIDTH_HEIGHT", "GAP"]]
+  ];
+
+  const semantics = specs.map(([id, cssVariable, foundation, tokenPath, valueType, primitive]) => {
+    const item = token({ id, cssVariable, layer: "semantic", foundation, path: tokenPath, valueType, value: `var(${primitive.cssVariable})`, unit: null });
+    item.variants[0].references = [primitive.id];
+    item.variants[0].resolved = primitive.variants[0].resolved;
+    return item;
+  });
+
+  const canonicalPath = writeCanonical(canonicalFixture([...semantics, colourPrimitive, dimensionPrimitive]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  for (const [id,,,,,, expectedScopes] of specs) {
+    const variable = manifest.variables.find((item) => item.id === id);
+    assert.ok(variable, `missing ${id}`);
+    assert.deepEqual(variable.scopes, expectedScopes, id);
+    assert.equal(variable.publish, true, id);
+  }
+  for (const primitive of manifest.variables.filter((item) => item.layer === "primitive")) {
+    assert.deepEqual(primitive.scopes, [], primitive.id);
+    assert.equal(primitive.publish, false, primitive.id);
+  }
 });
 
 test("carries arbitrary canonical mode dimensions without hard-coding Light/Dark", () => {
@@ -261,6 +297,82 @@ test("samples fluid typography into Small Medium Large Figma viewport modes", ()
   assert.deepEqual(semanticVariable.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
 });
 
+
+test("samples BufferCore fluid spacing into Small Medium Large Figma modes", () => {
+  const primitive = token({
+    id: "size.fluid.md",
+    cssVariable: "--bc-size-fluid-md",
+    foundation: "spacing",
+    path: ["size", "fluid", "md"],
+    valueType: "expression",
+    value: "clamp(2rem, calc(2rem + ((1vw - 0.3rem) * 1.1111)), 2.5rem)",
+    unit: null
+  });
+  const semantic = token({
+    id: "fluid.md",
+    cssVariable: "--bc-fluid-md",
+    layer: "semantic",
+    foundation: "spacing",
+    path: ["fluid", "md"],
+    valueType: "expression",
+    value: "var(--bc-size-fluid-md)",
+    unit: null
+  });
+  semantic.variants[0].references = ["size.fluid.md"];
+  semantic.variants[0].resolved = "clamp(2rem, calc(2rem + ((1vw - 0.3rem) * 1.1111)), 2.5rem)";
+
+  const canonicalPath = writeCanonical(canonicalFixture([primitive, semantic]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  const primitiveCollection = manifest.collections.find((item) => item.id === "primitive.spacing");
+  const semanticCollection = manifest.collections.find((item) => item.id === "semantic.spacing");
+  assert.deepEqual(primitiveCollection.modeDimensions.map((item) => item.id), ["viewport"]);
+  assert.deepEqual(semanticCollection.modeDimensions.map((item) => item.id), ["viewport"]);
+
+  const primitiveVariable = manifest.variables.find((item) => item.id === "size.fluid.md");
+  assert.equal(primitiveVariable.type, "FLOAT");
+  assert.deepEqual(primitiveVariable.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
+  assert.deepEqual(primitiveVariable.values.map((item) => item.value.value), [32, 36, 40]);
+
+  const semanticVariable = manifest.variables.find((item) => item.id === "fluid.md");
+  assert.equal(semanticVariable.type, "FLOAT");
+  assert.deepEqual(semanticVariable.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
+  assert.ok(semanticVariable.values.every((item) => item.value.kind === "alias" && item.value.tokenId === "size.fluid.md"));
+});
+
+test("samples 3XS fluid spacing into Small Medium Large Figma modes", () => {
+  const primitive = token({
+    id: "size.fluid.3xs",
+    cssVariable: "--bc-size-fluid-3xs",
+    foundation: "spacing",
+    path: ["size", "fluid", "3xs"],
+    valueType: "expression",
+    value: "clamp(0.25rem, calc(0.25rem + ((1vw - 0.3rem) * 0.5556)), 0.5rem)",
+    unit: null
+  });
+  const semantic = token({
+    id: "fluid.3xs",
+    cssVariable: "--bc-fluid-3xs",
+    layer: "semantic",
+    foundation: "spacing",
+    path: ["fluid", "3xs"],
+    valueType: "expression",
+    value: "var(--bc-size-fluid-3xs)",
+    unit: null
+  });
+  semantic.variants[0].references = ["size.fluid.3xs"];
+  semantic.variants[0].resolved = "clamp(0.25rem, calc(0.25rem + ((1vw - 0.3rem) * 0.5556)), 0.5rem)";
+
+  const canonicalPath = writeCanonical(canonicalFixture([primitive, semantic]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const primitiveVariable = manifest.variables.find((item) => item.id === "size.fluid.3xs");
+  assert.deepEqual(primitiveVariable.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
+  assert.deepEqual(primitiveVariable.values.map((item) => item.value.value), [4, 6, 8]);
+  const semanticVariable = manifest.variables.find((item) => item.id === "fluid.3xs");
+  assert.deepEqual(semanticVariable.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
+  assert.ok(semanticVariable.values.every((item) => item.value.kind === "alias" && item.value.tokenId === "size.fluid.3xs"));
+});
+
 test("converts CSS font stacks to a Figma font family literal", () => {
   const canonicalPath = writeCanonical(canonicalFixture([
     token({ id: "type.font.family.primary", cssVariable: "--bc-type-font-family-primary", foundation: "typography", path: ["type", "font-family", "primary"], valueType: "string", value: '"Parkinsans", sans-serif', unit: null })
@@ -348,6 +460,74 @@ test("Figma presentation IA groups semantic interaction colours together", () =>
   assert.equal(manifest.variables.find((item) => item.id === semantic.id).name, "Interaction / Link / Visited");
 });
 
+test("Figma semantic colour IA stays shallow and avoids redundant Base hierarchy leaves", () => {
+  const primitive = token({ id: "color.neutral.50", cssVariable: "--bc-color-neutral-50", layer: "primitive", foundation: "colour", path: ["color", "neutral", "50"], valueType: "color", value: "#808080", unit: null });
+  const makeSemantic = (id, tokenPath) => {
+    const item = token({ id, cssVariable: `--bc-${id.replaceAll('.', '-')}`, layer: "semantic", foundation: "colour", path: tokenPath, valueType: "color", value: "var(--bc-color-neutral-50)", unit: null });
+    item.variants[0].references = [primitive.id];
+    item.variants[0].resolved = "#808080";
+    return item;
+  };
+  const canonicalPath = writeCanonical(canonicalFixture([
+    primitive,
+    makeSemantic("color.text", ["color", "text"]),
+    makeSemantic("color.text.primary", ["color", "text", "primary"]),
+    makeSemantic("color.text.primary.strong", ["color", "text", "primary", "strong"]),
+    makeSemantic("color.text.primary.strong.inverse", ["color", "text", "primary", "strong", "inverse"]),
+    makeSemantic("color.fill.primary", ["color", "fill", "primary"]),
+    makeSemantic("color.fill.primary.strong", ["color", "fill", "primary", "strong"]),
+    makeSemantic("color.surface.general.primary.strong", ["color", "surface", "general", "primary", "strong"]),
+    makeSemantic("color.link.visited.inverse", ["color", "link", "visited", "inverse"])
+  ]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const names = Object.fromEntries(manifest.variables.filter((item) => item.layer === "semantic").map((item) => [item.id, item.name]));
+
+  assert.equal(names["color.text"], "Text / Neutral / Base");
+  assert.equal(names["color.text.primary"], "Text / Primary / Base");
+  assert.equal(names["color.text.primary.strong"], "Text / Primary / Strong");
+  assert.equal(names["color.text.primary.strong.inverse"], "Text / Primary / Strong Inverse");
+  assert.equal(names["color.fill.primary"], "Fill / Primary / Base");
+  assert.equal(names["color.fill.primary.strong"], "Fill / Primary / Strong");
+  assert.equal(names["color.surface.general.primary.strong"], "Surface / General / Primary / Strong");
+  assert.equal(names["color.link.visited.inverse"], "Interaction / Link / Visited Inverse");
+  assert.ok(Object.values(names).every((name) => !name.includes(" / Strong / Base")));
+});
+
+
+
+test("Figma primitive colour IA preserves dark ramp qualifiers and all emitted names stay unique per collection", () => {
+  const makePrimitive = (id, tokenPath) => token({
+    id,
+    cssVariable: `--bc-${id.replaceAll('.', '-')}`,
+    layer: "primitive",
+    foundation: "colour",
+    path: tokenPath,
+    valueType: "color",
+    value: "#808080",
+    unit: null
+  });
+  const canonicalPath = writeCanonical(canonicalFixture([
+    makePrimitive("color.ground.ramp.1.tint.90", ["color", "ground", "ramp", "1", "tint", "90"]),
+    makePrimitive("color.ground.dark.ramp.1.tint.90", ["color", "ground", "dark", "ramp", "1", "tint", "90"]),
+    makePrimitive("color.ground.ramp.1", ["color", "ground", "ramp", "1"]),
+    makePrimitive("color.ground.dark.ramp.1", ["color", "ground", "dark", "ramp", "1"])
+  ]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const byId = Object.fromEntries(manifest.variables.map((item) => [item.id, item.name]));
+
+  assert.equal(byId["color.ground.ramp.1.tint.90"], "Ground / Ramp 1 / T90");
+  assert.equal(byId["color.ground.dark.ramp.1.tint.90"], "Ground / Dark / Ramp 1 / T90");
+  assert.equal(byId["color.ground.ramp.1"], "Ground / Ramp 1 / Base");
+  assert.equal(byId["color.ground.dark.ramp.1"], "Ground / Dark / Ramp 1 / Base");
+
+  const seen = new Set();
+  for (const variable of manifest.variables) {
+    const key = `${variable.collectionId}|${variable.figmaName || variable.name}`;
+    assert.equal(seen.has(key), false, `duplicate Figma variable name: ${key}`);
+    seen.add(key);
+  }
+});
+
 test("Figma presentation IA compacts colour tones and orders tint to base to shade", () => {
   const make = (id, path, value) => token({ id, cssVariable: `--bc-${id.replaceAll('.', '-')}`, layer: "primitive", foundation: "colour", path, valueType: "color", value, unit: null });
   const tokens = [
@@ -396,15 +576,15 @@ test("Figma semantic colour IA prioritises common roles and groups tones last", 
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
   const semantic = manifest.variables.filter((item) => item.layer === "semantic");
   assert.deepEqual(semantic.map((item) => item.name), [
-    "Fill / Primary",
-    "Text / Primary",
-    "Border / Primary",
-    "Surface / General / Primary",
+    "Fill / Primary / Base",
+    "Border / Primary / Base",
+    "Surface / General / Primary / Base",
     "Canvas / Primary",
-    "Interaction / Link",
+    "Interaction / Link / Base",
     "Tones / Primary / T90",
     "Tones / Secondary / Base",
-    "Tones / Accent / Base"
+    "Tones / Accent / Base",
+    "Text / Primary / Base"
   ]);
 });
 
@@ -566,8 +746,10 @@ test("Colour presentation no longer defines a Disabled colour family", () => {
 });
 
 
-test("Figma carries explicit Context projections for Colour, Typography and Shadows", () => {
-  const canonical = JSON.parse(fs.readFileSync(path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json"), "utf8"));
+test("Figma carries explicit Context projections for Colour, Typography and Shadows", (t) => {
+  const engineManifest = path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json");
+  if (!fs.existsSync(engineManifest)) return t.skip("BufferCore-Engine sibling manifest is not present in this standalone Figma checkout.");
+  const canonical = JSON.parse(fs.readFileSync(engineManifest, "utf8"));
   const canonicalPath = writeCanonical(canonical);
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
 
@@ -587,8 +769,10 @@ test("Figma carries explicit Context projections for Colour, Typography and Shad
     .every((item) => item.available));
 });
 
-test("Figma publishes Disabled as a required OPACITY interaction-state projection", () => {
-  const canonical = JSON.parse(fs.readFileSync(path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json"), "utf8"));
+test("Figma publishes Disabled as a required OPACITY interaction-state projection", (t) => {
+  const engineManifest = path.resolve(figmaRoot, "../BufferCore-Engine/generated/manifest/buffercore.json");
+  if (!fs.existsSync(engineManifest)) return t.skip("BufferCore-Engine sibling manifest is not present in this standalone Figma checkout.");
+  const canonical = JSON.parse(fs.readFileSync(engineManifest, "utf8"));
   const canonicalPath = writeCanonical(canonical);
   const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
 
@@ -596,4 +780,175 @@ test("Figma publishes Disabled as a required OPACITY interaction-state projectio
   assert.equal(manifest.interactionStates.disabled.representation, "variable");
   assert.ok(manifest.interactionStates.disabled.scopes.includes("OPACITY"));
   assert.equal(manifest.interactionStates.disabled.variableId, "interaction.disabled.opacity");
+});
+
+test("dedicated Dark Ground and direct Canvas aliases survive the Figma projection", () => {
+  const lightGround = token({
+    id: "color.ground.ramp.1",
+    cssVariable: "--bc-color-ground-ramp-1",
+    foundation: "colour",
+    path: ["color", "ground", "ramp", "1"],
+    valueType: "color",
+    value: "#faf7f2",
+    unit: null
+  });
+  const darkGround = token({
+    id: "color.ground.dark.ramp.1",
+    cssVariable: "--bc-color-ground-dark-ramp-1",
+    foundation: "colour",
+    path: ["color", "ground", "dark", "ramp", "1"],
+    valueType: "color",
+    value: "#00002a",
+    unit: null
+  });
+  const canvas = token({
+    id: "color.canvas.primary",
+    cssVariable: "--bc-color-canvas-primary",
+    layer: "semantic",
+    foundation: "colour",
+    path: ["color", "canvas", "primary"],
+    valueType: "color",
+    value: "var(--bc-color-ground-ramp-1)",
+    unit: null,
+    modes: { "colour-scheme": "light" }
+  });
+  canvas.variants[0].references = [lightGround.id];
+  canvas.variants[0].resolved = "#faf7f2";
+  canvas.variants.push({
+    ...canvas.variants[0],
+    context: { modes: { "colour-scheme": "dark" }, conditions: [] },
+    rawValue: "var(--bc-color-ground-dark-ramp-1)",
+    references: [darkGround.id],
+    resolved: "#00002a"
+  });
+
+  const canonicalPath = writeCanonical(canonicalFixture([canvas, lightGround, darkGround]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+
+  assert.ok(manifest.variables.some((item) => item.id === darkGround.id));
+  const projected = manifest.variables.find((item) => item.id === canvas.id);
+  assert.ok(projected);
+  const light = projected.values.find((item) => item.context.modes["colour-scheme"] === "light");
+  const dark = projected.values.find((item) => item.context.modes["colour-scheme"] === "dark");
+  assert.deepEqual(light.value, { kind: "alias", tokenId: lightGround.id });
+  assert.deepEqual(dark.value, { kind: "alias", tokenId: darkGround.id });
+});
+
+
+test('Figma projection disambiguates hierarchy leaves with Base', () => {
+  const variables = [
+    { collectionId: 'semantic-colour', id: 'fill.neutral', name: 'Fill / Neutral', figmaName: 'Fill / Neutral' },
+    { collectionId: 'semantic-colour', id: 'fill.neutral.strong', name: 'Fill / Neutral / Strong', figmaName: 'Fill / Neutral / Strong' },
+    { collectionId: 'semantic-colour', id: 'text', name: 'Text', figmaName: 'Text' },
+    { collectionId: 'semantic-colour', id: 'text.primary', name: 'Text / Primary', figmaName: 'Text / Primary' }
+  ];
+  disambiguateFigmaHierarchyLeaves(variables);
+  assert.equal(variables[0].name, 'Fill / Neutral / Base');
+  assert.equal(variables[1].name, 'Fill / Neutral / Strong');
+  assert.equal(variables[2].name, 'Text / Base');
+  assert.equal(variables[3].name, 'Text / Primary');
+});
+
+
+test("projects border widths, blur radii and container gutters to compatible Figma FLOAT scopes", () => {
+  const tokens = [
+    token({ id: "stroke.width.1", cssVariable: "--bc-stroke-width-1", layer: "primitive", foundation: "stroke", path: ["stroke", "width", "1"], valueType: "dimension", value: "1px", unit: "px" }),
+    token({ id: "border.width.xs", cssVariable: "--bc-border-width-xs", layer: "semantic", foundation: "borders", path: ["border", "width", "xs"], valueType: "dimension", value: "var(--bc-stroke-width-1)", unit: null }),
+    token({ id: "blur.6", cssVariable: "--bc-blur-6", layer: "primitive", foundation: "effects", path: ["blur", "6"], valueType: "string", value: "blur(6px)", unit: null }),
+    token({ id: "blur.soft", cssVariable: "--bc-blur-soft", layer: "semantic", foundation: "effects", path: ["blur", "soft"], valueType: "string", value: "var(--bc-blur-6)", unit: null }),
+    token({ id: "container.space.sm", cssVariable: "--bc-container-space-sm", layer: "primitive", foundation: "containers", path: ["container", "space", "sm"], valueType: "expression", value: "clamp(1rem, 3vw, 2rem)", unit: null }),
+    token({ id: "container.gutter.sm", cssVariable: "--bc-container-gutter-sm", layer: "semantic", foundation: "containers", path: ["container", "gutter", "sm"], valueType: "expression", value: "var(--bc-container-space-sm)", unit: null })
+  ];
+  tokens[1].variants[0].references = ["stroke.width.1"];
+  tokens[3].variants[0].references = ["blur.6"];
+  tokens[5].variants[0].references = ["container.space.sm"];
+  const fixture = canonicalFixture(tokens);
+  const canonicalPath = writeCanonical(fixture);
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const border = manifest.variables.find((item) => item.id === "border.width.xs");
+  const blur = manifest.variables.find((item) => item.id === "blur.soft");
+  const gutter = manifest.variables.find((item) => item.id === "container.gutter.sm");
+  assert.equal(border.type, "FLOAT");
+  assert.deepEqual(border.scopes, ["STROKE_FLOAT"]);
+  assert.equal(blur.type, "FLOAT");
+  assert.deepEqual(blur.scopes, ["EFFECT_FLOAT"]);
+  assert.equal(gutter.type, "FLOAT");
+  assert.deepEqual(gutter.scopes, ["GAP"]);
+  assert.deepEqual(gutter.values.map((item) => item.context.modes.viewport), ["small", "medium", "large"]);
+});
+
+
+test("text styles use standard vertical trim while mirroring CSS line-height ratios", () => {
+  const tokens = [
+    token({ id: "type.heading.1.font.family", cssVariable: "--bc-type-heading-1-font-family", layer: "semantic", foundation: "typography", path: ["type", "heading", "1", "font", "family"], valueType: "string", value: "Parkinsans", unit: null }),
+    token({ id: "type.heading.1.font.size", cssVariable: "--bc-type-heading-1-font-size", layer: "semantic", foundation: "typography", path: ["type", "heading", "1", "font", "size"], valueType: "dimension", value: "32px", unit: "px" }),
+    token({ id: "type.heading.1.font.weight", cssVariable: "--bc-type-heading-1-font-weight", layer: "semantic", foundation: "typography", path: ["type", "heading", "1", "font", "weight"], valueType: "number", value: "700", unit: null }),
+    token({ id: "type.heading.1.line.height", cssVariable: "--bc-type-heading-1-line-height", layer: "semantic", foundation: "typography", path: ["type", "heading", "1", "line", "height"], valueType: "number", value: "1.3", unit: null }),
+    token({ id: "type.heading.1.letter.spacing", cssVariable: "--bc-type-heading-1-letter-spacing", layer: "semantic", foundation: "typography", path: ["type", "heading", "1", "letter", "spacing"], valueType: "dimension", value: "0.32px", unit: "px" })
+  ];
+  const canonicalPath = writeCanonical(canonicalFixture(tokens));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const style = manifest.styles.find((item) => item.id === "text.heading.1");
+  assert.ok(style);
+  assert.equal(style.name, "Heading / H1");
+  assert.equal(style.leadingTrim, "NONE");
+  assert.deepEqual(style.lineHeight, { unit: "PERCENT", value: 130 });
+  assert.equal(style.bindings["line-height"].fallback, 1.3);
+});
+
+test("text style leaves include searchable role prefixes", () => {
+  const tokens = [];
+  for (const [role, index] of [["display", 6], ["heading", 2], ["paragraph", 3], ["label", 4], ["overline", 2]]) {
+    for (const [property, valueType, value, unit] of [
+      ["font-family", "string", "Parkinsans", null],
+      ["font-size", "dimension", "16px", "px"],
+      ["font-weight", "number", "600", null],
+      ["line-height", "number", "1.3", null],
+      ["letter-spacing", "dimension", "0px", "px"]
+    ]) {
+      tokens.push(token({
+        id: `type.${role}.${index}.${property.replaceAll('-', '.')}`,
+        cssVariable: `--bc-type-${role}-${index}-${property}`,
+        layer: "semantic",
+        foundation: "typography",
+        path: ["type", role, String(index), ...property.split("-")],
+        valueType,
+        value,
+        unit
+      }));
+    }
+  }
+  const canonicalPath = writeCanonical(canonicalFixture(tokens));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const names = new Map(manifest.styles.filter((item) => item.type === "TEXT").map((item) => [item.id, item.name]));
+  assert.equal(names.get("text.display.6"), "Display / D6");
+  assert.equal(names.get("text.heading.2"), "Heading / H2");
+  assert.equal(names.get("text.paragraph.3"), "Paragraph / P3");
+  assert.equal(names.get("text.label.4"), "Label / L4");
+  assert.equal(names.get("text.overline.2"), "Overline / O2");
+});
+
+
+test("semantic text colours are available to text and vector/icon fills and sort last in fill pickers", () => {
+  const primitive = token({ id: "color.neutral.50", cssVariable: "--bc-color-neutral-50", layer: "primitive", foundation: "colour", path: ["color", "neutral", "50"], valueType: "color", value: "#808080", unit: null });
+  const makeSemantic = (id, path) => {
+    const item = token({ id, cssVariable: `--bc-${id.replaceAll('.', '-')}`, layer: "semantic", foundation: "colour", path, valueType: "color", value: "var(--bc-color-neutral-50)", unit: null });
+    item.variants[0].references = ["color.neutral.50"];
+    item.variants[0].resolved = "#808080";
+    return item;
+  };
+  const canonicalPath = writeCanonical(canonicalFixture([
+    primitive,
+    makeSemantic("color.fill.primary", ["color", "fill", "primary"]),
+    makeSemantic("color.surface.general.primary", ["color", "surface", "general", "primary"]),
+    makeSemantic("color.text.primary", ["color", "text", "primary"])
+  ]));
+  const manifest = buildFigmaManifest({ rootDir: figmaRoot, canonicalPath, configPath });
+  const text = manifest.variables.find((variable) => variable.id === "color.text.primary");
+  const fill = manifest.variables.find((variable) => variable.id === "color.fill.primary");
+  const surface = manifest.variables.find((variable) => variable.id === "color.surface.general.primary");
+  assert.deepEqual(text.scopes, ["ALL_FILLS", "STROKE_COLOR"]);
+  const leadingSpaces = (value) => String(value || "").length - String(value || "").trimStart().length;
+  assert.ok(leadingSpaces(text.figmaName) < leadingSpaces(fill.figmaName));
+  assert.ok(leadingSpaces(text.figmaName) < leadingSpaces(surface.figmaName));
 });

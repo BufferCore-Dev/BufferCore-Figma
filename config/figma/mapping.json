@@ -47,73 +47,69 @@
   "scopeRules": [
     {
       "match": {
-        "valueType": "number",
-        "pathContains": "opacity"
+        "layer": "primitive"
       },
-      "scopes": [
-        "OPACITY"
-      ]
-    },
-    {
-      "match": {
-        "foundation": "typography",
-        "pathContains": "font-family"
-      },
-      "scopes": [
-        "FONT_FAMILY"
-      ]
-    },
-    {
-      "match": {
-        "foundation": "typography",
-        "pathContains": "font-size"
-      },
-      "scopes": [
-        "FONT_SIZE"
-      ]
-    },
-    {
-      "match": {
-        "foundation": "typography",
-        "pathContains": "font-weight"
-      },
-      "scopes": [
-        "FONT_WEIGHT"
-      ]
-    },
-    {
-      "match": {
-        "foundation": "typography",
-        "pathContains": "line-height"
-      },
-      "scopes": [
-        "LINE_HEIGHT"
-      ]
-    },
-    {
-      "match": {
-        "foundation": "typography",
-        "pathContains": "letter-spacing"
-      },
-      "scopes": [
-        "LETTER_SPACING"
-      ]
+      "scopes": []
     },
     {
       "match": {
         "foundation": "colour",
+        "layer": "semantic",
         "pathPrefix": [
           "color",
           "text"
         ]
       },
       "scopes": [
-        "TEXT_FILL"
+        "ALL_FILLS",
+        "STROKE_COLOR"
       ]
     },
     {
       "match": {
         "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "fill"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL",
+        "SHAPE_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "surface"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL",
+        "SHAPE_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "canvas"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
         "pathPrefix": [
           "color",
           "border"
@@ -126,37 +122,241 @@
     {
       "match": {
         "foundation": "colour",
+        "layer": "semantic",
         "pathPrefix": [
           "color",
-          "fill"
+          "link"
         ]
       },
       "scopes": [
-        "ALL_FILLS"
+        "TEXT_FILL",
+        "SHAPE_FILL"
       ]
     },
     {
       "match": {
         "foundation": "colour",
+        "layer": "semantic",
         "pathPrefix": [
           "color",
-          "surface"
+          "focus"
         ]
       },
       "scopes": [
-        "ALL_FILLS"
+        "STROKE_COLOR"
       ]
     },
     {
       "match": {
         "foundation": "colour",
+        "layer": "semantic",
         "pathPrefix": [
           "color",
-          "canvas"
+          "placeholder"
         ]
       },
       "scopes": [
-        "ALL_FILLS"
+        "TEXT_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "shadow"
+        ]
+      },
+      "scopes": [
+        "EFFECT_COLOR"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "primary"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL",
+        "SHAPE_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "secondary"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL",
+        "SHAPE_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "colour",
+        "layer": "semantic",
+        "pathPrefix": [
+          "color",
+          "accent"
+        ]
+      },
+      "scopes": [
+        "FRAME_FILL",
+        "SHAPE_FILL"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "layer": "semantic",
+        "cssVariableIncludes": "font-family"
+      },
+      "scopes": [
+        "FONT_FAMILY"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "layer": "semantic",
+        "cssVariableIncludes": "font-size"
+      },
+      "scopes": [
+        "FONT_SIZE"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "layer": "semantic",
+        "cssVariableIncludes": "font-weight"
+      },
+      "scopes": [
+        "FONT_WEIGHT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "layer": "semantic",
+        "cssVariableIncludes": "line-height"
+      },
+      "scopes": [
+        "LINE_HEIGHT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "typography",
+        "layer": "semantic",
+        "cssVariableIncludes": "letter-spacing"
+      },
+      "scopes": [
+        "LETTER_SPACING"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "spacing",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "GAP"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "sizing",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "WIDTH_HEIGHT",
+        "GAP"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "radius",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "CORNER_RADIUS"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "borders",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "STROKE_FLOAT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "stroke",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "STROKE_FLOAT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "interaction",
+        "layer": "semantic",
+        "pathContains": "opacity"
+      },
+      "scopes": [
+        "OPACITY"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "effects",
+        "layer": "semantic",
+        "pathContains": "opacity"
+      },
+      "scopes": [
+        "OPACITY"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "effects",
+        "layer": "semantic",
+        "pathContains": "blur"
+      },
+      "scopes": [
+        "EFFECT_FLOAT"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "containers",
+        "layer": "semantic",
+        "pathContains": "gutter"
+      },
+      "scopes": [
+        "GAP"
+      ]
+    },
+    {
+      "match": {
+        "foundation": "containers",
+        "layer": "semantic"
+      },
+      "scopes": [
+        "WIDTH_HEIGHT"
       ]
     }
   ],
@@ -210,7 +410,21 @@
       "font-weight",
       "line-height",
       "letter-spacing"
-    ]
+    ],
+    "verticalTrim": {
+      "figma": "NONE",
+      "css": "normal line box"
+    },
+    "searchPrefixes": {
+      "display": "D",
+      "heading": "H",
+      "paragraph": "P",
+      "label": "L",
+      "overline": "O"
+    },
+    "lineHeight": {
+      "unitlessAsPercent": true
+    }
   },
   "effectStyles": {
     "enabled": true,
@@ -285,5 +499,42 @@
   "variableOrdering": {
     "strategy": "segment-leading-spaces",
     "maxLeadingSpaces": 40
-  }
+  },
+  "publishRules": [
+    {
+      "match": {
+        "layer": "primitive"
+      },
+      "publish": false
+    },
+    {
+      "match": {
+        "layer": "semantic",
+        "foundation": "breakpoints"
+      },
+      "publish": false
+    },
+    {
+      "match": {
+        "layer": "semantic",
+        "foundation": "motion"
+      },
+      "publish": false
+    },
+    {
+      "match": {
+        "layer": "semantic",
+        "foundation": "z-index"
+      },
+      "publish": false
+    },
+    {
+      "match": {
+        "layer": "semantic",
+        "foundation": "effects",
+        "pathContains": "blur"
+      },
+      "publish": false
+    }
+  ]
 }

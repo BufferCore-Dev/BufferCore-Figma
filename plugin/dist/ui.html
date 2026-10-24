@@ -389,6 +389,25 @@
     background:var(--figma-color-border);
   }
   .family-item strong { font-size:11px; }
+  .family-item[data-family-card].linked {
+    cursor:pointer;
+    transition:border-color .14s ease,background .14s ease,box-shadow .14s ease,transform .14s ease;
+  }
+  .family-item[data-family-card].linked:hover {
+    border-color:color-mix(in srgb,var(--bc-accent) 42%,var(--bc-border));
+    background:color-mix(in srgb,var(--bc-accent-soft) 46%,var(--bc-surface));
+    box-shadow:var(--bc-shadow-soft);
+  }
+  .family-item[data-family-card].linked:focus-visible {
+    outline:2px solid var(--bc-accent);
+    outline-offset:2px;
+  }
+  .family-item[data-family-card].linked strong::after {
+    content:'↗';
+    margin-left:5px;
+    color:var(--bc-accent);
+    font-size:.68rem;
+  }
   .family-state { margin-top:4px; font-size:10px; }
 
   .mini-chip {
@@ -2187,13 +2206,13 @@
     margin-bottom:5px;color:var(--bc-text-faint);font-size:.65rem;line-height:1.2;font-weight:780;
     letter-spacing:.05em;text-transform:uppercase
   }
-  select,input[type="text"]{
+  select,input[type="text"],input[type="number"]{
     width:100%;min-height:36px;border:1px solid var(--bc-border-strong);border-radius:8px;padding:0 10px;
     background:var(--bc-surface);color:var(--bc-text);font-size:.82rem;outline:none;
     transition:border-color .12s ease,box-shadow .12s ease,background .12s ease
   }
-  select:hover,input[type="text"]:hover{background:var(--bc-surface-subtle)}
-  select:focus,input[type="text"]:focus{
+  select:hover,input[type="text"]:hover,input[type="number"]:hover{background:var(--bc-surface-subtle)}
+  select:focus,input[type="text"]:focus,input[type="number"]:focus{
     border-color:var(--bc-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--bc-accent) 13%,transparent)
   }
   .context-remap-grid,.control-grid{gap:10px}
@@ -2359,6 +2378,64 @@
     font-size:1.08rem;
   }
 
+  /* Generate layout editor ------------------------------------------------ */
+  .layout-settings-stack{display:grid;gap:12px}
+  .layout-settings-group{display:grid;gap:9px;padding:11px;border:1px solid var(--bc-border);border-radius:10px;background:var(--bc-surface-subtle)}
+  .layout-settings-group-title{font-size:.72rem;font-weight:760;color:var(--bc-text);line-height:1.25}
+  .layout-axis-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .layout-pair-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+  .layout-four-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .layout-axis-control{display:grid;gap:7px;min-width:0}
+  .layout-axis-line{display:grid;grid-template-columns:minmax(0,1fr) minmax(116px,.72fr);gap:8px;align-items:end}
+  .layout-segmented{display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:3px;border:1px solid var(--bc-border-strong);border-radius:8px;background:var(--bc-bg)}
+  .layout-segmented button{min-height:30px;border:0;border-radius:6px;background:transparent;color:var(--bc-text-soft);font:inherit;font-size:.78rem;font-weight:700;cursor:pointer}
+  .layout-segmented button:hover{color:var(--bc-text);background:var(--bc-surface)}
+  .layout-segmented button.active{color:var(--bc-text);background:var(--bc-surface);box-shadow:0 1px 3px rgba(0,0,0,.08)}
+  .layout-inline-note{color:var(--bc-text-faint);font-size:.72rem;line-height:1.35}
+  .layout-settings-group input[type="number"]{width:100%;min-height:36px;border:1px solid var(--bc-border-strong);border-radius:8px;padding:0 10px;background:var(--bc-surface);color:var(--bc-text);outline:none}
+  .layout-settings-group input[type="number"]:disabled{opacity:.55;background:var(--bc-bg)}
+  .layout-settings-group .field{margin:0}
+  .layout-details-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:36px;padding:0 2px;cursor:pointer;list-style:none}
+  .layout-details-summary::-webkit-details-marker{display:none}
+  .layout-details-summary strong{font-size:.82rem}
+  .layout-details-summary span{color:var(--bc-text-faint);font-size:.72rem}
+  @media (max-width:700px){.layout-axis-grid,.layout-pair-grid{grid-template-columns:1fr}.layout-four-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.layout-axis-line{grid-template-columns:1fr}}
+
+  /* Generate arrangement ------------------------------------------------- */
+  .generate-arrangement{display:grid;gap:12px;padding-top:2px}
+  .generate-arrangement-title{display:flex;align-items:end;justify-content:space-between;gap:12px}
+  .generate-arrangement-title .field-hint{margin:0;text-align:right}
+  .generate-layout-choice{display:grid;gap:6px}
+  .generate-layout-choice .layout-segmented{max-width:300px}
+  .generate-config{display:grid;gap:8px;padding-top:2px}
+  .generate-config-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .generate-config-head strong{font-size:.78rem;line-height:1.25}
+  .generate-config-head .action{flex:0 0 auto}
+  .generate-preset-field{display:grid;gap:5px}
+  .generate-preset-summary{color:var(--bc-text-faint);font-size:.72rem;line-height:1.35}
+  .generate-custom-panel{display:grid;gap:10px}
+  .generate-custom-primary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .generate-auto-custom-row{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:8px;align-items:end}
+  .generate-advanced{border-top:1px solid var(--bc-border)}
+  .generate-advanced>summary{min-height:36px;display:flex;align-items:center;color:var(--bc-text-soft);font-size:.72rem;font-weight:720;cursor:pointer;list-style:none}
+  .generate-advanced>summary::-webkit-details-marker{display:none}
+  .generate-advanced>summary::after{content:'+';margin-left:auto;color:var(--bc-text-faint);font-size:.82rem}
+  .generate-advanced[open]>summary::after{content:'−'}
+  .generate-advanced-body{display:grid;gap:10px;padding:4px 0 8px}
+  .generate-settings-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .generate-padding-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+  .generate-flow-primary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .generate-arrangement .layout-segmented{min-height:36px}
+  .generate-arrangement .layout-segmented button{min-height:28px}
+  .generate-arrangement input[type="number"],.generate-arrangement select{min-height:36px}
+  @media (max-width:700px){
+    .generate-arrangement-title{align-items:start;flex-direction:column}
+    .generate-arrangement-title .field-hint{text-align:left}
+    .generate-custom-primary,.generate-settings-row,.generate-flow-primary{grid-template-columns:1fr}
+    .generate-padding-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .generate-auto-custom-row{grid-template-columns:1fr}
+  }
+
   .bc-tool-heading p {
     font-size:.82rem;
     line-height:1.45;
@@ -2374,7 +2451,8 @@
   }
 
   select,
-  input[type="text"] {
+  input[type="text"],
+  input[type="number"] {
     font-size:.9rem;
   }
 
@@ -3418,6 +3496,108 @@
       0 0 0 4px color-mix(in srgb,var(--bc-accent) 35%,transparent);
   }
 
+
+  .bc-levels-menu-wrap {
+    position:relative;
+    display:flex;
+    align-items:center;
+  }
+
+  .bc-levels-trigger {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+  }
+
+  .bc-levels-trigger::after {
+    content:'▾';
+    font-size:.68rem;
+    line-height:1;
+    opacity:.65;
+    transform:translateY(-1px);
+  }
+
+  .bc-levels-trigger[aria-expanded="true"] {
+    background:var(--bc-accent-soft);
+    color:var(--bc-text);
+  }
+
+  .bc-levels-trigger[aria-expanded="true"]::after {
+    transform:rotate(180deg) translateY(1px);
+  }
+
+  .bc-levels-menu {
+    position:absolute;
+    top:calc(100% + 8px);
+    left:0;
+    z-index:200;
+    width:220px;
+    padding:7px;
+    border:1px solid var(--bc-border);
+    border-radius:10px;
+    background:var(--bc-surface);
+    box-shadow:0 12px 32px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.08);
+  }
+
+  .bc-levels-menu::before {
+    content:'';
+    position:absolute;
+    left:0;
+    right:0;
+    top:-8px;
+    height:8px;
+    background:transparent;
+  }
+
+  .bc-levels-menu[hidden] {
+    display:none;
+  }
+
+  .bc-levels-link {
+    width:100%;
+    min-height:36px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:0 10px;
+    border:0;
+    border-radius:7px;
+    background:transparent;
+    color:var(--bc-text);
+    font:inherit;
+    font-size:.82rem;
+    font-weight:650;
+    text-align:left;
+    cursor:pointer;
+  }
+
+  .bc-levels-link:hover,
+  .bc-levels-link:focus-visible {
+    background:var(--bc-surface-subtle);
+    outline:0;
+  }
+
+  .bc-levels-link .bc-levels-link-meta {
+    color:var(--bc-text-soft);
+    font-size:.72rem;
+    font-weight:600;
+  }
+
+  .bc-levels-link.is-current .bc-levels-link-meta {
+    color:var(--bc-accent);
+  }
+
+  .bc-levels-link:disabled {
+    color:var(--bc-text-soft);
+    cursor:default;
+    opacity:.52;
+  }
+
+  .bc-levels-link:disabled:hover {
+    background:transparent;
+  }
+
   /* Top-level Tools / Flavours uses the same active/focus behaviour too. */
   .bc-primary-tab {
     transition:
@@ -3900,6 +4080,57 @@
     }
   }
 
+
+  .confirm-overlay {
+    position:fixed;
+    inset:0;
+    z-index:1000;
+    display:grid;
+    place-items:center;
+    padding:20px;
+    background:rgba(0,0,0,.32);
+  }
+  .confirm-overlay[hidden] { display:none; }
+  .confirm-dialog {
+    width:min(100%, 420px);
+    border:1px solid var(--figma-color-border);
+    border-radius:14px;
+    background:var(--figma-color-bg);
+    box-shadow:0 18px 52px rgba(0,0,0,.22);
+    overflow:hidden;
+  }
+  .confirm-dialog-body { padding:18px 18px 14px; }
+  .confirm-dialog-title {
+    margin:0;
+    font-size:15px;
+    font-weight:760;
+    letter-spacing:-.015em;
+    color:var(--figma-color-text);
+  }
+  .confirm-dialog-copy {
+    margin:7px 0 0;
+    font-size:11px;
+    line-height:1.55;
+    color:var(--figma-color-text-secondary);
+  }
+  .confirm-dialog-current {
+    margin-top:12px;
+    padding:10px 11px;
+    border-radius:9px;
+    background:var(--figma-color-bg-secondary);
+    font-size:10px;
+    line-height:1.45;
+    color:var(--figma-color-text-secondary);
+  }
+  .confirm-dialog-current strong { color:var(--figma-color-text); }
+  .confirm-dialog-actions {
+    display:flex;
+    justify-content:flex-end;
+    gap:8px;
+    padding:12px 18px 16px;
+    border-top:1px solid var(--figma-color-border);
+  }
+
 </style>
 </head>
 <body>
@@ -3918,6 +4149,10 @@
   <nav class="bc-primary-nav" aria-label="BufferCore sections">
     <button class="bc-primary-tab active" type="button" data-tab="tools">Tools</button>
     <button class="bc-primary-tab" type="button" data-tab="flavours">Flavours</button>
+    <div class="bc-levels-menu-wrap">
+      <button id="levelsMenuTrigger" class="bc-primary-tab bc-levels-trigger" type="button" aria-haspopup="menu" aria-expanded="false">Levels</button>
+      <div id="levelsMenu" class="bc-levels-menu" role="menu" hidden></div>
+    </div>
   </nav>
 
   <main class="workspace">
@@ -4004,6 +4239,140 @@
             <div class="context-target-tools">
               <button id="contextGenerateAll" class="action ghost compact" type="button" disabled>Select all</button>
               <button id="contextGenerateClear" class="action ghost compact" type="button" disabled>Clear</button>
+            </div>
+          </div>
+
+          <div class="generate-arrangement" style="margin-top:14px">
+            <div class="generate-arrangement-title">
+              <div class="control-label">Arrangement</div>
+              <div class="field-hint">Figma native layout</div>
+            </div>
+
+            <div class="generate-layout-choice">
+              <div class="layout-segmented" data-segmented-select="contextGenerateLayoutMode">
+                <button type="button" data-value="GRID">Grid</button>
+                <button type="button" data-value="FLOW">Flow</button>
+              </div>
+              <select id="contextGenerateLayoutMode" hidden>
+                <option value="GRID">Grid</option>
+                <option value="FLOW">Flow</option>
+              </select>
+            </div>
+
+            <select id="contextGenerateArrangementSource" hidden>
+              <option value="PRESET">Preset</option>
+              <option value="CUSTOM">Custom</option>
+            </select>
+
+            <div id="contextGeneratePresetPanel" class="generate-config">
+              <div class="generate-config-head">
+                <strong id="contextGeneratePresetLabel">Grid preset</strong>
+                <button id="contextGenerateCustomize" class="action ghost compact" type="button">Custom</button>
+              </div>
+              <div class="generate-preset-field">
+                <select id="contextGeneratePreset"></select>
+                <div id="contextGeneratePresetSummary" class="generate-preset-summary">5 × Auto · 24px gap</div>
+              </div>
+            </div>
+
+            <div id="contextGenerateCustomPanel" class="generate-config" hidden>
+              <div class="generate-config-head">
+                <strong id="contextGenerateCustomLabel">Custom grid</strong>
+                <button id="contextGenerateUsePreset" class="action ghost compact" type="button">Use preset</button>
+              </div>
+
+              <div id="contextGenerateGridControls" class="generate-custom-panel">
+                <div class="generate-custom-primary">
+                  <div class="field">
+                    <div class="control-label">Columns</div>
+                    <input id="contextGenerateGridColumns" type="number" min="1" step="1" value="5">
+                  </div>
+                  <div class="field">
+                    <div class="control-label">Rows</div>
+                    <div class="generate-auto-custom-row">
+                      <div class="layout-segmented" data-segmented-select="contextGenerateGridRowsMode">
+                        <button type="button" data-value="AUTO">Auto</button>
+                        <button type="button" data-value="FIXED">Custom</button>
+                      </div>
+                      <input id="contextGenerateGridRows" type="number" min="1" step="1" value="5" disabled aria-label="Custom row count">
+                    </div>
+                    <select id="contextGenerateGridRowsMode" hidden><option value="AUTO">Auto</option><option value="FIXED">Custom</option></select>
+                  </div>
+                </div>
+
+                <details class="generate-advanced">
+                  <summary>More grid settings</summary>
+                  <div class="generate-advanced-body">
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Column gap</div><input id="contextGenerateGridColumnGap" type="number" min="0" step="1" value="24"></div>
+                      <div class="field"><div class="control-label">Row gap</div><input id="contextGenerateGridRowGap" type="number" min="0" step="1" value="24"></div>
+                    </div>
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Column sizing</div><select id="contextGenerateGridColumnSizing"><option value="HUG">Hug</option><option value="FIXED">Fixed</option></select></div>
+                      <div class="field"><div class="control-label">Column size</div><input id="contextGenerateGridColumnSize" type="number" min="1" step="1" value="240" disabled></div>
+                    </div>
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Row sizing</div><select id="contextGenerateGridRowSizing"><option value="HUG">Hug</option><option value="FIXED">Fixed</option></select></div>
+                      <div class="field"><div class="control-label">Row size</div><input id="contextGenerateGridRowSize" type="number" min="1" step="1" value="240" disabled></div>
+                    </div>
+                    <div class="generate-padding-row">
+                      <div class="field"><div class="control-label">Top</div><input id="contextGeneratePaddingTop" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Right</div><input id="contextGeneratePaddingRight" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Bottom</div><input id="contextGeneratePaddingBottom" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Left</div><input id="contextGeneratePaddingLeft" type="number" min="0" step="1" value="0"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <div id="contextGenerateFlowControls" class="generate-custom-panel" hidden>
+                <div class="generate-flow-primary">
+                  <div class="field">
+                    <div class="control-label">Direction</div>
+                    <div class="layout-segmented" data-segmented-select="contextGenerateLayoutDirection">
+                      <button type="button" data-value="HORIZONTAL">Horizontal</button>
+                      <button type="button" data-value="VERTICAL">Vertical</button>
+                    </div>
+                    <select id="contextGenerateLayoutDirection" hidden><option value="HORIZONTAL">Horizontal</option><option value="VERTICAL">Vertical</option></select>
+                  </div>
+                  <div class="field">
+                    <div class="control-label">Wrap</div>
+                    <div class="layout-segmented" data-segmented-select="contextGenerateLayoutWrap">
+                      <button type="button" data-value="false">Off</button>
+                      <button type="button" data-value="true">On</button>
+                    </div>
+                    <select id="contextGenerateLayoutWrap" hidden><option value="false">Off</option><option value="true">On</option></select>
+                  </div>
+                </div>
+
+                <details class="generate-advanced">
+                  <summary>More flow settings</summary>
+                  <div class="generate-advanced-body">
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Item gap</div><input id="contextGenerateItemSpacing" type="number" min="0" step="1" value="24"></div>
+                      <div class="field"><div class="control-label">Wrapped gap</div><input id="contextGenerateCounterSpacing" type="number" min="0" step="1" value="24"></div>
+                    </div>
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Width</div><select id="contextGenerateWidthMode"><option value="AUTO">Hug contents</option><option value="FIXED">Fixed</option></select></div>
+                      <div class="field"><div class="control-label">Fixed width</div><input id="contextGenerateWidth" type="number" min="1" step="1" value="1200" disabled></div>
+                    </div>
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Height</div><select id="contextGenerateHeightMode"><option value="AUTO">Hug contents</option><option value="FIXED">Fixed</option></select></div>
+                      <div class="field"><div class="control-label">Fixed height</div><input id="contextGenerateHeight" type="number" min="1" step="1" value="800" disabled></div>
+                    </div>
+                    <div class="generate-settings-row">
+                      <div class="field"><div class="control-label">Main axis</div><select id="contextGeneratePrimaryAlign"><option value="MIN">Start</option><option value="CENTER">Centre</option><option value="MAX">End</option><option value="SPACE_BETWEEN">Space between</option></select></div>
+                      <div class="field"><div class="control-label">Cross axis</div><select id="contextGenerateCounterAlign"><option value="MIN">Start</option><option value="CENTER">Centre</option><option value="MAX">End</option><option value="BASELINE">Baseline</option></select></div>
+                    </div>
+                    <div class="generate-padding-row">
+                      <div class="field"><div class="control-label">Top</div><input id="contextGenerateFlowPaddingTop" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Right</div><input id="contextGenerateFlowPaddingRight" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Bottom</div><input id="contextGenerateFlowPaddingBottom" type="number" min="0" step="1" value="0"></div>
+                      <div class="field"><div class="control-label">Left</div><input id="contextGenerateFlowPaddingLeft" type="number" min="0" step="1" value="0"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
             </div>
           </div>
 
@@ -4201,6 +4570,9 @@
         <button class="bc-tab active" type="button" data-settings-view="general">
           <span class="bc-tab-icon">●</span><span class="bc-tab-label">General</span>
         </button>
+        <button class="bc-tab" type="button" data-settings-view="generate">
+          <span class="bc-tab-icon">✦</span><span class="bc-tab-label">Generate</span>
+        </button>
         <button class="bc-tab" type="button" data-settings-view="core-setup">
           <span class="bc-tab-icon">◆</span><span class="bc-tab-label">Core Setup</span>
         </button>
@@ -4224,6 +4596,16 @@
                 <option value="tools">Tools</option>
                 <option value="flavours">Flavours</option>
               </select>
+            </div>
+            <div class="auto-reconcile-row" style="margin-top:14px">
+              <div class="auto-reconcile-copy">
+                <strong>Open Levels on hover</strong>
+                <span>Open the Levels quick-link menu when the pointer moves over it. Turn off to require a click.</span>
+              </div>
+              <label class="auto-toggle" title="Open the Levels quick-link menu on hover">
+                <input id="levelsOpenOnHoverToggle" type="checkbox" checked>
+                <span class="auto-toggle-track"></span>
+              </label>
             </div>
             <div class="setting-slider-group" style="margin-top:14px">
               <div class="setting-slider-head">
@@ -4257,7 +4639,30 @@
               </div>
               <input id="fontSizeRange" class="setting-range" type="range" min="12.5" max="24" step="0.25" value="14">
             </div>
-            <div class="auto-reconcile-row" style="margin-top:12px">
+          </div>
+        </section>
+      </div>
+
+      <div class="settings-view" data-settings-panel="generate" hidden>
+        <div class="settings-section-intro">
+          <strong>Generate</strong>
+          <span>Manage reusable native Figma layout presets.</span>
+        </div>
+        <section class="settings-section">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">Layout presets</div>
+              <div class="panel-copy">Grid is the default. Flow presets use Figma Auto Layout.</div>
+            </div>
+            <button id="generatePresetAdd" class="action primary compact" type="button">Add preset</button>
+          </div>
+          <div class="panel-body">
+            <div class="field">
+              <div class="control-label">Default preset</div>
+              <select id="defaultGeneratePreset"></select>
+            </div>
+            <div id="generatePresetList" style="margin-top:12px"></div>
+            <div class="auto-reconcile-row" style="margin-top:14px">
               <div class="auto-reconcile-copy">
                 <strong>Focus generated results</strong>
                 <span>Zoom and centre the generated Context set when generation finishes.</span>
@@ -4266,6 +4671,59 @@
                 <input id="focusGeneratedResultsToggle" type="checkbox" checked>
                 <span class="auto-toggle-track"></span>
               </label>
+            </div>
+          </div>
+        </section>
+        <section class="settings-section" id="generatePresetEditor" hidden>
+          <div class="panel-header">
+            <div><div class="panel-title" id="generatePresetEditorTitle">Edit preset</div><div class="panel-copy">Uses Figma's native layout properties.</div></div>
+          </div>
+          <div class="panel-body layout-settings-stack">
+            <div class="layout-pair-grid">
+              <div class="field"><div class="control-label">Name</div><input id="generatePresetName" type="text" value=""></div>
+              <div class="field"><div class="control-label">Layout</div><select id="generatePresetMode"><option value="GRID">Grid</option><option value="FLOW">Auto Layout flow</option></select></div>
+            </div>
+
+            <div id="generatePresetGridFields" class="layout-settings-group">
+              <div class="layout-settings-group-title">Grid</div>
+              <div class="layout-axis-grid">
+                <div class="layout-axis-control">
+                  <div class="control-label">Columns</div>
+                  <input id="generatePresetColumns" type="number" min="1" step="1" value="5">
+                </div>
+                <div class="layout-axis-control">
+                  <div class="control-label">Rows</div>
+                  <div class="layout-axis-line">
+                    <div class="layout-segmented" data-segmented-select="generatePresetRowsMode">
+                      <button type="button" data-value="AUTO">Auto</button>
+                      <button type="button" data-value="FIXED">Custom</button>
+                    </div>
+                    <input id="generatePresetRows" type="number" min="1" step="1" value="5" aria-label="Custom row count">
+                  </div>
+                  <select id="generatePresetRowsMode" hidden><option value="AUTO">Auto</option><option value="FIXED">Custom</option></select>
+                </div>
+              </div>
+              <div class="layout-pair-grid">
+                <div class="field"><div class="control-label">Column gap</div><input id="generatePresetColumnGap" type="number" min="0" step="1" value="24"></div>
+                <div class="field"><div class="control-label">Row gap</div><input id="generatePresetRowGap" type="number" min="0" step="1" value="24"></div>
+              </div>
+            </div>
+
+            <div id="generatePresetFlowFields" class="layout-settings-group" hidden>
+              <div class="layout-settings-group-title">Auto Layout flow</div>
+              <div class="layout-pair-grid">
+                <div class="field"><div class="control-label">Direction</div><select id="generatePresetDirection"><option value="HORIZONTAL">Horizontal</option><option value="VERTICAL">Vertical</option></select></div>
+                <div class="field"><div class="control-label">Wrap</div><select id="generatePresetWrap"><option value="false">No wrap</option><option value="true">Wrap</option></select></div>
+              </div>
+              <div class="layout-pair-grid">
+                <div class="field"><div class="control-label">Item gap</div><input id="generatePresetItemSpacing" type="number" min="0" step="1" value="24"></div>
+                <div class="field"><div class="control-label">Wrapped gap</div><input id="generatePresetCounterSpacing" type="number" min="0" step="1" value="24"></div>
+              </div>
+              <div class="field"><div class="control-label">Fixed width</div><input id="generatePresetWidth" type="number" min="1" step="1" value="1200"></div>
+            </div>
+            <div class="section-actions" style="margin-top:12px">
+              <button id="generatePresetSave" class="action primary" type="button">Save preset</button>
+              <button id="generatePresetCancel" class="action ghost" type="button">Cancel</button>
             </div>
           </div>
         </section>
@@ -4319,12 +4777,12 @@
           </div>
 
           <div id="familyStatus" class="family-grid">
-            <div class="family-item"><strong>Foundations</strong><span class="family-state" data-master-layer="foundations">Master —</span><span class="family-state" data-flavour-layer="foundations" hidden></span></div>
-            <div class="family-item"><strong>Elements</strong><span class="family-state" data-master-layer="elements">Master —</span><span class="family-state" data-flavour-layer="elements" hidden></span></div>
-            <div class="family-item"><strong>Components</strong><span class="family-state" data-master-layer="components">Master —</span><span class="family-state" data-flavour-layer="components" hidden></span></div>
-            <div class="family-item"><strong>Layout</strong><span class="family-state" data-master-layer="layout">Master —</span><span class="family-state" data-flavour-layer="layout" hidden></span></div>
-            <div class="family-item"><strong>Templates</strong><span class="family-state" data-master-layer="templates">Master —</span><span class="family-state" data-flavour-layer="templates" hidden></span></div>
-            <div class="family-item"><strong>Pages</strong><span class="family-state" data-master-layer="pages">Master —</span><span class="family-state" data-flavour-layer="pages" hidden></span></div>
+            <div class="family-item" data-family-card="foundations"><strong>Foundations</strong><span class="family-state" data-master-layer="foundations">Master —</span><span class="family-state" data-flavour-layer="foundations" hidden></span></div>
+            <div class="family-item" data-family-card="elements"><strong>Elements</strong><span class="family-state" data-master-layer="elements">Master —</span><span class="family-state" data-flavour-layer="elements" hidden></span></div>
+            <div class="family-item" data-family-card="components"><strong>Components</strong><span class="family-state" data-master-layer="components">Master —</span><span class="family-state" data-flavour-layer="components" hidden></span></div>
+            <div class="family-item" data-family-card="layout"><strong>Layout</strong><span class="family-state" data-master-layer="layout">Master —</span><span class="family-state" data-flavour-layer="layout" hidden></span></div>
+            <div class="family-item" data-family-card="templates"><strong>Templates</strong><span class="family-state" data-master-layer="templates">Master —</span><span class="family-state" data-flavour-layer="templates" hidden></span></div>
+            <div class="family-item" data-family-card="pages"><strong>Pages</strong><span class="family-state" data-master-layer="pages">Master —</span><span class="family-state" data-flavour-layer="pages" hidden></span></div>
           </div>
           <div id="systemStatusNote" class="diagnostic">Ready.</div>
         </div>
@@ -4516,6 +4974,20 @@
   <div class="bc-resize-handle bc-resize-handle-corner" data-resize-axis="xy" aria-hidden="true"></div>
 
 </div>
+  <div id="replaceMasterConfirm" class="confirm-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="replaceMasterTitle">
+    <div class="confirm-dialog">
+      <div class="confirm-dialog-body">
+        <h2 id="replaceMasterTitle" class="confirm-dialog-title">Register as new master?</h2>
+        <p id="replaceMasterCopy" class="confirm-dialog-copy">This level already has a registered master. Registering this file will replace that registration.</p>
+        <div id="replaceMasterCurrent" class="confirm-dialog-current"></div>
+      </div>
+      <div class="confirm-dialog-actions">
+        <button id="replaceMasterCancel" class="action ghost" type="button">Cancel</button>
+        <button id="replaceMasterConfirmAction" class="action primary" type="button">Register as new master</button>
+      </div>
+    </div>
+  </div>
+
 <script>
   let manifest = null;
   let activeFilter = 'all';
@@ -4554,8 +5026,116 @@
   }
 
   document.querySelectorAll('[data-tab]').forEach((button) => {
-    button.addEventListener('click', () => activateTabAnimated(button.dataset.tab));
+    button.addEventListener('click', () => {
+      closeLevelsMenu();
+      activateTabAnimated(button.dataset.tab);
+    });
   });
+
+  const LEVEL_MENU_LAYERS = [
+    ['foundations', 'Foundations'],
+    ['elements', 'Elements'],
+    ['components', 'Components'],
+    ['layout', 'Layout'],
+    ['templates', 'Templates'],
+    ['pages', 'Pages']
+  ];
+
+  function closeLevelsMenu() {
+    const menu = $('levelsMenu');
+    const trigger = $('levelsMenuTrigger');
+    if (!menu || !trigger) return;
+    menu.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+
+  function openLevelsMenu({ focusFirst = false } = {}) {
+    const menu = $('levelsMenu');
+    const trigger = $('levelsMenuTrigger');
+    if (!menu || !trigger) return;
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    if (focusFirst) menu.querySelector('.bc-levels-link:not(:disabled)')?.focus();
+  }
+
+  function toggleLevelsMenu() {
+    const menu = $('levelsMenu');
+    if (!menu) return;
+    if (menu.hidden) openLevelsMenu({ focusFirst: true });
+    else closeLevelsMenu();
+  }
+
+  function renderLevelsMenu(payload = latestFamilyStatus) {
+    const menu = $('levelsMenu');
+    if (!menu) return;
+    const currentFileKey = currentFileContext?.fileKey || '';
+    menu.innerHTML = LEVEL_MENU_LAYERS.map(([layer, label]) => {
+      const master = payload?.layers?.[layer]?.master || null;
+      const fileKey = master?.fileKey || '';
+      const current = Boolean(fileKey && currentFileKey && fileKey === currentFileKey);
+      const meta = current ? 'Current' : (fileKey ? 'Open ↗' : 'Not registered');
+      return `<button class="bc-levels-link${current ? ' is-current' : ''}" type="button" role="menuitem" data-level-file-key="${escapeHtml(fileKey)}"${fileKey ? '' : ' disabled'}><span>${escapeHtml(label)}</span><span class="bc-levels-link-meta">${meta}</span></button>`;
+    }).join('');
+  }
+
+  let levelsHoverCloseTimer = null;
+
+  function cancelLevelsHoverClose() {
+    if (levelsHoverCloseTimer !== null) {
+      clearTimeout(levelsHoverCloseTimer);
+      levelsHoverCloseTimer = null;
+    }
+  }
+
+  function scheduleLevelsHoverClose() {
+    cancelLevelsHoverClose();
+    levelsHoverCloseTimer = setTimeout(() => {
+      levelsHoverCloseTimer = null;
+      closeLevelsMenu();
+    }, 180);
+  }
+
+  $('levelsMenuTrigger')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    cancelLevelsHoverClose();
+    toggleLevelsMenu();
+  });
+
+  const levelsMenuWrap = document.querySelector('.bc-levels-menu-wrap');
+  levelsMenuWrap?.addEventListener('mouseenter', () => {
+    cancelLevelsHoverClose();
+    if (currentPluginSettings.levelsOpenOnHover) openLevelsMenu();
+  });
+
+  levelsMenuWrap?.addEventListener('mouseleave', () => {
+    if (currentPluginSettings.levelsOpenOnHover) scheduleLevelsHoverClose();
+  });
+
+  $('levelsMenu')?.addEventListener('mouseenter', cancelLevelsHoverClose);
+  $('levelsMenu')?.addEventListener('mouseleave', () => {
+    if (currentPluginSettings.levelsOpenOnHover) scheduleLevelsHoverClose();
+  });
+
+  $('levelsMenu')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-level-file-key]');
+    const fileKey = button?.dataset?.levelFileKey || '';
+    if (!fileKey) return;
+    closeLevelsMenu();
+    parent.postMessage({ pluginMessage: { type: 'open-registered-file', fileKey } }, '*');
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.bc-levels-menu-wrap')) closeLevelsMenu();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      const wasOpen = !$('levelsMenu')?.hidden;
+      closeLevelsMenu();
+      if (wasOpen) $('levelsMenuTrigger')?.focus();
+    }
+  });
+
 
   let activeToolView = 'remap';
 
@@ -4579,7 +5159,183 @@
 
   activateToolView('remap');
 
-  let currentPluginSettings = { defaultTab: 'tools', focusGeneratedResults: true, windowWidth: 780, windowHeight: 860, fontSizePx: 14 };
+  function syncSegmentedSelect(selectId) {
+    const select = $(selectId);
+    document.querySelectorAll(`[data-segmented-select="${selectId}"] button`).forEach((button) => {
+      button.classList.toggle('active', button.dataset.value === select.value);
+      button.setAttribute('aria-pressed', button.dataset.value === select.value ? 'true' : 'false');
+    });
+  }
+
+  function wireSegmentedSelect(selectId, onChange) {
+    document.querySelectorAll(`[data-segmented-select="${selectId}"] button`).forEach((button) => {
+      button.addEventListener('click', () => {
+        $(selectId).value = button.dataset.value;
+        syncSegmentedSelect(selectId);
+        onChange?.();
+      });
+    });
+    syncSegmentedSelect(selectId);
+  }
+
+  const BUILTIN_GENERATE_PRESETS = [
+    { id: 'grid-5-auto', name: '5 columns', builtin: true, layout: { mode: 'GRID', columns: 5, rowsMode: 'AUTO', rows: 1, columnGap: 24, rowGap: 24, columnSizing: 'HUG', rowSizing: 'HUG', columnSize: 240, rowSize: 240, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 } },
+    { id: 'grid-4-auto', name: '4 columns', builtin: true, layout: { mode: 'GRID', columns: 4, rowsMode: 'AUTO', rows: 1, columnGap: 24, rowGap: 24, columnSizing: 'HUG', rowSizing: 'HUG', columnSize: 240, rowSize: 240, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 } },
+    { id: 'grid-3-auto', name: '3 columns', builtin: true, layout: { mode: 'GRID', columns: 3, rowsMode: 'AUTO', rows: 1, columnGap: 24, rowGap: 24, columnSizing: 'HUG', rowSizing: 'HUG', columnSize: 240, rowSize: 240, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 } },
+    { id: 'flow-row', name: 'Horizontal row', builtin: true, layout: { mode: 'FLOW', direction: 'HORIZONTAL', wrap: false, widthMode: 'AUTO', heightMode: 'AUTO', width: 1200, height: 800, itemSpacing: 24, counterAxisSpacing: 24, primaryAxisAlignItems: 'MIN', counterAxisAlignItems: 'MIN', paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 } },
+    { id: 'flow-column', name: 'Vertical stack', builtin: true, layout: { mode: 'FLOW', direction: 'VERTICAL', wrap: false, widthMode: 'AUTO', heightMode: 'AUTO', width: 1200, height: 800, itemSpacing: 24, counterAxisSpacing: 24, primaryAxisAlignItems: 'MIN', counterAxisAlignItems: 'MIN', paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 } }
+  ];
+
+  let currentPluginSettings = { defaultTab: 'tools', focusGeneratedResults: true, levelsOpenOnHover: true, defaultGeneratePresetId: 'grid-5-auto', generatePresets: [], windowWidth: 780, windowHeight: 860, fontSizePx: 14 };
+  let editingGeneratePresetId = null;
+
+  function generatePresets() {
+    return [...BUILTIN_GENERATE_PRESETS, ...(currentPluginSettings.generatePresets || [])];
+  }
+
+  function generatePresetsForMode(mode) {
+    const normalized = mode === 'FLOW' ? 'FLOW' : 'GRID';
+    return generatePresets().filter((preset) => (preset.layout?.mode === 'FLOW' ? 'FLOW' : 'GRID') === normalized);
+  }
+
+  function generatePresetById(id) {
+    return generatePresets().find((preset) => preset.id === id) || BUILTIN_GENERATE_PRESETS[0];
+  }
+
+  function generateLayoutSummary(layout = {}) {
+    if (layout.mode === 'FLOW') {
+      const direction = layout.direction === 'VERTICAL' ? 'Vertical' : 'Horizontal';
+      const wrap = layout.wrap ? ' · Wrap' : '';
+      return `Auto Layout · ${direction}${wrap} · ${Number(layout.itemSpacing) || 0}px gap`;
+    }
+    const rows = layout.rowsMode === 'FIXED' ? String(layout.rows || 1) : 'Auto';
+    return `Grid · ${layout.columns || 5} × ${rows} · ${Number(layout.columnGap) || 0}px gap`;
+  }
+
+  function applyGenerateLayoutToControls(layout = {}) {
+    const mode = layout.mode === 'FLOW' ? 'FLOW' : 'GRID';
+    $('contextGenerateLayoutMode').value = mode;
+    $('contextGenerateGridColumns').value = String(layout.columns || 5);
+    $('contextGenerateGridRowsMode').value = layout.rowsMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    syncSegmentedSelect('contextGenerateGridRowsMode');
+    $('contextGenerateGridRows').value = String(layout.rows || 5);
+    $('contextGenerateGridColumnGap').value = String(Number(layout.columnGap) || 0);
+    $('contextGenerateGridRowGap').value = String(Number(layout.rowGap) || 0);
+    $('contextGenerateGridColumnSizing').value = layout.columnSizing === 'FIXED' ? 'FIXED' : 'HUG';
+    $('contextGenerateGridRowSizing').value = layout.rowSizing === 'FIXED' ? 'FIXED' : 'HUG';
+    $('contextGenerateGridColumnSize').value = String(layout.columnSize || 240);
+    $('contextGenerateGridRowSize').value = String(layout.rowSize || 240);
+
+    $('contextGenerateLayoutDirection').value = layout.direction === 'VERTICAL' ? 'VERTICAL' : 'HORIZONTAL';
+    $('contextGenerateLayoutWrap').value = layout.wrap ? 'true' : 'false';
+    $('contextGenerateWidthMode').value = layout.widthMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    $('contextGenerateHeightMode').value = layout.heightMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    $('contextGenerateWidth').value = String(layout.width || 1200);
+    $('contextGenerateHeight').value = String(layout.height || 800);
+    $('contextGenerateItemSpacing').value = String(Number(layout.itemSpacing) || 0);
+    $('contextGenerateCounterSpacing').value = String(Number(layout.counterAxisSpacing) || 0);
+    $('contextGeneratePrimaryAlign').value = layout.primaryAxisAlignItems || 'MIN';
+    $('contextGenerateCounterAlign').value = layout.counterAxisAlignItems || 'MIN';
+    $('contextGeneratePaddingTop').value = String(Number(layout.paddingTop) || 0);
+    $('contextGeneratePaddingRight').value = String(Number(layout.paddingRight) || 0);
+    $('contextGeneratePaddingBottom').value = String(Number(layout.paddingBottom) || 0);
+    $('contextGeneratePaddingLeft').value = String(Number(layout.paddingLeft) || 0);
+    $('contextGenerateFlowPaddingTop').value = String(Number(layout.paddingTop) || 0);
+    $('contextGenerateFlowPaddingRight').value = String(Number(layout.paddingRight) || 0);
+    $('contextGenerateFlowPaddingBottom').value = String(Number(layout.paddingBottom) || 0);
+    $('contextGenerateFlowPaddingLeft').value = String(Number(layout.paddingLeft) || 0);
+    syncSegmentedSelect('contextGenerateLayoutMode');
+    syncContextGenerateLayoutInputs();
+  }
+
+  function renderContextGeneratePresetOptions(mode, preferredId = null) {
+    const presets = generatePresetsForMode(mode);
+    $('contextGeneratePreset').innerHTML = presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`).join('');
+
+    const defaultPreset = generatePresetById(currentPluginSettings.defaultGeneratePresetId);
+    const defaultMatchesMode = presets.some((preset) => preset.id === defaultPreset.id);
+    const preferred = presets.some((preset) => preset.id === preferredId)
+      ? preferredId
+      : (defaultMatchesMode ? defaultPreset.id : presets[0]?.id);
+
+    if (!preferred) return;
+    $('contextGeneratePreset').value = preferred;
+    const preset = generatePresetById(preferred);
+    applyGenerateLayoutToControls(preset.layout);
+    $('contextGeneratePresetSummary').textContent = generateLayoutSummary(preset.layout).replace(/^Grid · /, '').replace(/^Auto Layout · /, '');
+  }
+
+  function renderGeneratePresetControls() {
+    const presets = generatePresets();
+    const options = presets.map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`).join('');
+    $('defaultGeneratePreset').innerHTML = options;
+
+    if (!presets.some((preset) => preset.id === currentPluginSettings.defaultGeneratePresetId)) {
+      currentPluginSettings.defaultGeneratePresetId = 'grid-5-auto';
+    }
+    $('defaultGeneratePreset').value = currentPluginSettings.defaultGeneratePresetId;
+
+    const mode = $('contextGenerateLayoutMode').value === 'FLOW' ? 'FLOW' : 'GRID';
+    const current = $('contextGeneratePreset').value;
+    renderContextGeneratePresetOptions(mode, current);
+
+    $('generatePresetList').innerHTML = presets.map((preset) => `
+      <div class="primary-action-row" style="margin-top:8px">
+        <div>
+          <div class="title">${escapeHtml(preset.name)}${preset.id === currentPluginSettings.defaultGeneratePresetId ? ' · Default' : ''}</div>
+          <div class="meta">${escapeHtml(generateLayoutSummary(preset.layout))}</div>
+        </div>
+        <div class="context-target-tools">
+          <button class="action ghost compact" type="button" data-preset-edit="${escapeHtml(preset.id)}">${preset.builtin ? 'Duplicate' : 'Edit'}</button>
+          ${preset.builtin ? '' : `<button class="action ghost compact" type="button" data-preset-delete="${escapeHtml(preset.id)}">Delete</button>`}
+        </div>
+      </div>`).join('');
+
+    $('generatePresetList').querySelectorAll('[data-preset-edit]').forEach((button) => {
+      button.addEventListener('click', () => openGeneratePresetEditor(button.dataset.presetEdit));
+    });
+    $('generatePresetList').querySelectorAll('[data-preset-delete]').forEach((button) => {
+      button.addEventListener('click', () => deleteGeneratePreset(button.dataset.presetDelete));
+    });
+  }
+
+  function persistGeneratePresetSettings() {
+    parent.postMessage({ pluginMessage: { type: 'plugin-settings-set', settings: {
+      defaultGeneratePresetId: currentPluginSettings.defaultGeneratePresetId,
+      generatePresets: currentPluginSettings.generatePresets || []
+    } } }, '*');
+  }
+
+  function openGeneratePresetEditor(id = null) {
+    const source = id ? generatePresetById(id) : null;
+    const duplicateBuiltin = source?.builtin;
+    editingGeneratePresetId = source && !duplicateBuiltin ? source.id : null;
+    const layout = source?.layout || BUILTIN_GENERATE_PRESETS[0].layout;
+    $('generatePresetEditor').hidden = false;
+    $('generatePresetEditorTitle').textContent = editingGeneratePresetId ? 'Edit preset' : (source ? 'Duplicate preset' : 'Add preset');
+    $('generatePresetName').value = source ? `${source.name}${duplicateBuiltin ? ' copy' : ''}` : 'New preset';
+    $('generatePresetMode').value = layout.mode === 'FLOW' ? 'FLOW' : 'GRID';
+    $('generatePresetColumns').value = String(layout.columns || 5);
+    $('generatePresetRowsMode').value = layout.rowsMode === 'FIXED' ? 'FIXED' : 'AUTO';
+    syncSegmentedSelect('generatePresetRowsMode');
+    $('generatePresetRows').value = String(layout.rows || 5);
+    $('generatePresetColumnGap').value = String(Number(layout.columnGap ?? layout.itemSpacing) || 0);
+    $('generatePresetRowGap').value = String(Number(layout.rowGap ?? layout.counterAxisSpacing) || 0);
+    $('generatePresetDirection').value = layout.direction === 'VERTICAL' ? 'VERTICAL' : 'HORIZONTAL';
+    $('generatePresetWrap').value = layout.wrap ? 'true' : 'false';
+    $('generatePresetItemSpacing').value = String(Number(layout.itemSpacing ?? layout.columnGap) || 0);
+    $('generatePresetCounterSpacing').value = String(Number(layout.counterAxisSpacing ?? layout.rowGap) || 0);
+    $('generatePresetWidth').value = String(layout.width || 1200);
+    syncGeneratePresetEditorFields();
+  }
+
+  function deleteGeneratePreset(id) {
+    currentPluginSettings.generatePresets = (currentPluginSettings.generatePresets || []).filter((preset) => preset.id !== id);
+    if (currentPluginSettings.defaultGeneratePresetId === id) currentPluginSettings.defaultGeneratePresetId = 'grid-5-auto';
+    persistGeneratePresetSettings();
+    renderGeneratePresetControls();
+  }
+
   let tabBeforeSettings = 'tools';
   let tabBeforeHelp = 'tools';
 
@@ -4652,6 +5408,17 @@
       pluginMessage: {
         type: 'plugin-settings-set',
         settings: { defaultTab: currentPluginSettings.defaultTab }
+      }
+    }, '*');
+  });
+
+  $('levelsOpenOnHoverToggle').addEventListener('change', () => {
+    currentPluginSettings.levelsOpenOnHover = $('levelsOpenOnHoverToggle').checked;
+    if (!currentPluginSettings.levelsOpenOnHover) closeLevelsMenu();
+    parent.postMessage({
+      pluginMessage: {
+        type: 'plugin-settings-set',
+        settings: { levelsOpenOnHover: currentPluginSettings.levelsOpenOnHover }
       }
     }, '*');
   });
@@ -4787,8 +5554,6 @@
     }, '*');
   });
 
-  parent.postMessage({ pluginMessage: { type: 'plugin-settings-get' } }, '*');
-
   let activeFlavourView = 'project';
 
   function setFlavourView(view) {
@@ -4845,7 +5610,54 @@
   let bridgeAvailable = false;
   let activeLibraryTarget = null;
   let latestFamilyStatus = null;
+  let currentFileContext = null;
+  let pendingMasterRegistration = null;
   let contextRemapDomains = [];
+
+  function registeredMasterForLayer(layer = $('systemLayer')?.value) {
+    return latestFamilyStatus?.layers?.[layer]?.master || null;
+  }
+
+  function masterLayerLabel(layer) {
+    const option = [...$('systemLayer').options].find((item) => item.value === layer);
+    return option?.textContent?.replace(/^BC:\s*/, '') || layer;
+  }
+
+  function currentFileMatchesRegisteredMaster(layer = $('systemLayer')?.value) {
+    const existingMaster = registeredMasterForLayer(layer);
+    const currentFileKey = currentFileContext?.fileKey || '';
+    return Boolean(existingMaster?.fileKey && currentFileKey && existingMaster.fileKey === currentFileKey);
+  }
+
+  function updateRegisterSystemLabel() {
+    const button = $('registerSystemLayer');
+    if (!button) return;
+    const role = $('systemRole').value;
+    const existingMaster = role === 'master' ? registeredMasterForLayer() : null;
+    const currentMaster = role === 'master' && currentFileMatchesRegisteredMaster();
+    button.textContent = currentMaster
+      ? 'Update current master'
+      : existingMaster
+        ? 'Register as new master'
+        : 'Register file';
+  }
+
+  function closeReplaceMasterConfirm() {
+    $('replaceMasterConfirm').hidden = true;
+    pendingMasterRegistration = null;
+  }
+
+  function openReplaceMasterConfirm(registration, existingMaster) {
+    pendingMasterRegistration = registration;
+    const layerName = masterLayerLabel(registration.layer);
+    $('replaceMasterTitle').textContent = `Register new ${layerName} master?`;
+    $('replaceMasterCopy').textContent = `BufferCore already has a ${layerName} master. Registering this file will replace that master registration for this level.`;
+    const currentName = existingMaster?.fileName || 'Existing registered master';
+    const registeredAt = existingMaster?.registeredAt ? ` · registered ${formatDate(existingMaster.registeredAt)}` : '';
+    $('replaceMasterCurrent').innerHTML = `<strong>Current master:</strong> ${escapeHtml(currentName)}${escapeHtml(registeredAt)}`;
+    $('replaceMasterConfirm').hidden = false;
+    $('replaceMasterCancel').focus();
+  }
 
   function shortCommit(value) { return value ? String(value).slice(0, 10) : '—'; }
   function formatDate(value) {
@@ -5149,6 +5961,8 @@
 
   function renderFamilyStatus(payload) {
     latestFamilyStatus = payload;
+    renderLevelsMenu(payload);
+    updateRegisterSystemLabel();
     for (const layer of ['foundations','elements','components','layout','templates','pages']) {
       const row = payload?.layers?.[layer] || {};
       const master = document.querySelector(`[data-master-layer="${layer}"]`);
@@ -5156,6 +5970,23 @@
       if (master) {
         master.textContent = row.master ? `Master ✓ ${row.master.assets?.length || (Object.keys(row.master.bindings?.variables || {}).length + Object.keys(row.master.bindings?.styles || {}).length)} registered` : 'Master —';
         master.classList.toggle('ready', Boolean(row.master));
+      }
+      const card = document.querySelector(`[data-family-card="${layer}"]`);
+      if (card) {
+        const fileKey = row.master?.fileKey || '';
+        card.dataset.fileKey = fileKey;
+        card.classList.toggle('linked', Boolean(fileKey));
+        if (fileKey) {
+          card.setAttribute('role', 'link');
+          card.setAttribute('tabindex', '0');
+          card.setAttribute('title', `Open ${row.master.fileName || layer} in Figma`);
+          card.setAttribute('aria-label', `Open ${row.master.fileName || layer} in Figma`);
+        } else {
+          card.removeAttribute('role');
+          card.removeAttribute('tabindex');
+          card.setAttribute('title', row.master ? 'Re-register this master once to enable opening it from here.' : 'No master registered.');
+          card.removeAttribute('aria-label');
+        }
       }
       if (flavour) {
         flavour.textContent = row.flavour ? `Flavour ✓ ${row.flavour.assets?.length || (Object.keys(row.flavour.bindings?.variables || {}).length + Object.keys(row.flavour.bindings?.styles || {}).length)} registered` : 'Flavour —';
@@ -5177,13 +6008,34 @@
     updateSystemControls();
   }
 
+  function openRegisteredFamilyCard(card) {
+    const fileKey = card?.dataset?.fileKey || '';
+    if (!fileKey) return;
+    parent.postMessage({ pluginMessage: { type: 'open-registered-file', fileKey } }, '*');
+  }
+
+  $('familyStatus')?.addEventListener('click', (event) => {
+    const card = event.target.closest('[data-family-card].linked');
+    if (card) openRegisteredFamilyCard(card);
+  });
+
+  $('familyStatus')?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const card = event.target.closest('[data-family-card].linked');
+    if (!card) return;
+    event.preventDefault();
+    openRegisteredFamilyCard(card);
+  });
+
   function updateSystemControls() {
     const layer = $('systemLayer').value;
+    updateRegisterSystemLabel();
     const role = $('systemRole').value;
     const flavour = selectedFlavourId();
     $('syncSystemLayer').disabled = true;
-    $('registerSystemLayer').disabled = true;
-    $('registerSystemLayer').dataset.publishReady = 'false';
+    const masterRegistration = role === 'master';
+    $('registerSystemLayer').disabled = !masterRegistration;
+    $('registerSystemLayer').dataset.publishReady = masterRegistration ? 'true' : 'false';
     if (role === 'master') requestLibraryPublishStatus(layer, 'core');
   }
 
@@ -5661,6 +6513,174 @@
     input.addEventListener('change', updateContextGenerateButton);
   });
 
+  function contextGenerateNativeLayout() {
+    const grid = $('contextGenerateLayoutMode').value === 'GRID';
+    const common = {
+      paddingTop: Number($(grid ? 'contextGeneratePaddingTop' : 'contextGenerateFlowPaddingTop').value) || 0,
+      paddingRight: Number($(grid ? 'contextGeneratePaddingRight' : 'contextGenerateFlowPaddingRight').value) || 0,
+      paddingBottom: Number($(grid ? 'contextGeneratePaddingBottom' : 'contextGenerateFlowPaddingBottom').value) || 0,
+      paddingLeft: Number($(grid ? 'contextGeneratePaddingLeft' : 'contextGenerateFlowPaddingLeft').value) || 0
+    };
+
+    if (grid) {
+      return {
+        ...common,
+        mode: 'GRID',
+        columns: Math.max(1, Number($('contextGenerateGridColumns').value) || 1),
+        rowsMode: $('contextGenerateGridRowsMode').value,
+        rows: Math.max(1, Number($('contextGenerateGridRows').value) || 1),
+        columnGap: Number($('contextGenerateGridColumnGap').value) || 0,
+        rowGap: Number($('contextGenerateGridRowGap').value) || 0,
+        columnSizing: $('contextGenerateGridColumnSizing').value,
+        rowSizing: $('contextGenerateGridRowSizing').value,
+        columnSize: Math.max(1, Number($('contextGenerateGridColumnSize').value) || 1),
+        rowSize: Math.max(1, Number($('contextGenerateGridRowSize').value) || 1)
+      };
+    }
+
+    return {
+      ...common,
+      mode: 'FLOW',
+      direction: $('contextGenerateLayoutDirection').value,
+      wrap: $('contextGenerateLayoutWrap').value === 'true',
+      widthMode: $('contextGenerateWidthMode').value,
+      heightMode: $('contextGenerateHeightMode').value,
+      width: Number($('contextGenerateWidth').value) || 1,
+      height: Number($('contextGenerateHeight').value) || 1,
+      itemSpacing: Number($('contextGenerateItemSpacing').value) || 0,
+      counterAxisSpacing: Number($('contextGenerateCounterSpacing').value) || 0,
+      primaryAxisAlignItems: $('contextGeneratePrimaryAlign').value,
+      counterAxisAlignItems: $('contextGenerateCounterAlign').value
+    };
+  }
+
+  function syncContextGenerateLayoutInputs() {
+    const grid = $('contextGenerateLayoutMode').value === 'GRID';
+    const custom = $('contextGenerateArrangementSource').value === 'CUSTOM';
+    syncSegmentedSelect('contextGenerateLayoutMode');
+    $('contextGeneratePresetPanel').hidden = custom;
+    $('contextGenerateCustomPanel').hidden = !custom;
+    $('contextGenerateGridControls').hidden = !custom || !grid;
+    $('contextGenerateFlowControls').hidden = !custom || grid;
+    $('contextGeneratePresetLabel').textContent = grid ? 'Grid preset' : 'Flow preset';
+    $('contextGenerateCustomLabel').textContent = grid ? 'Custom grid' : 'Custom flow';
+    syncSegmentedSelect('contextGenerateLayoutDirection');
+    syncSegmentedSelect('contextGenerateLayoutWrap');
+    $('contextGenerateGridRows').disabled = $('contextGenerateGridRowsMode').value !== 'FIXED';
+    syncSegmentedSelect('contextGenerateGridRowsMode');
+    $('contextGenerateGridColumnSize').disabled = $('contextGenerateGridColumnSizing').value !== 'FIXED';
+    $('contextGenerateGridRowSize').disabled = $('contextGenerateGridRowSizing').value !== 'FIXED';
+    $('contextGenerateWidth').disabled = $('contextGenerateWidthMode').value !== 'FIXED';
+    $('contextGenerateHeight').disabled = $('contextGenerateHeightMode').value !== 'FIXED';
+  }
+
+  function syncGeneratePresetEditorFields() {
+    const grid = $('generatePresetMode').value === 'GRID';
+    $('generatePresetGridFields').hidden = !grid;
+    $('generatePresetFlowFields').hidden = grid;
+    $('generatePresetRows').disabled = $('generatePresetRowsMode').value !== 'FIXED';
+    syncSegmentedSelect('generatePresetRowsMode');
+  }
+
+  function markGenerateLayoutCustom() {
+    if ($('contextGenerateArrangementSource').value !== 'CUSTOM') {
+      $('contextGenerateArrangementSource').value = 'CUSTOM';
+      }
+    syncContextGenerateLayoutInputs();
+  }
+
+  $('contextGeneratePreset').addEventListener('change', () => {
+    const preset = generatePresetById($('contextGeneratePreset').value);
+    applyGenerateLayoutToControls(preset.layout);
+    $('contextGeneratePresetSummary').textContent = generateLayoutSummary(preset.layout).replace(/^Grid · /, '').replace(/^Auto Layout · /, '');
+  });
+
+  [
+    'contextGenerateGridColumns','contextGenerateGridRowsMode','contextGenerateGridRows',
+    'contextGenerateGridColumnGap','contextGenerateGridRowGap','contextGenerateGridColumnSizing','contextGenerateGridRowSizing',
+    'contextGenerateGridColumnSize','contextGenerateGridRowSize','contextGenerateLayoutDirection','contextGenerateLayoutWrap',
+    'contextGenerateWidthMode','contextGenerateHeightMode','contextGenerateWidth','contextGenerateHeight','contextGenerateItemSpacing',
+    'contextGenerateCounterSpacing','contextGeneratePrimaryAlign','contextGenerateCounterAlign','contextGeneratePaddingTop',
+    'contextGeneratePaddingRight','contextGeneratePaddingBottom','contextGeneratePaddingLeft','contextGenerateFlowPaddingTop',
+    'contextGenerateFlowPaddingRight','contextGenerateFlowPaddingBottom','contextGenerateFlowPaddingLeft'
+  ].forEach((id) => {
+    $(id).addEventListener('change', () => { syncContextGenerateLayoutInputs(); markGenerateLayoutCustom(); });
+    $(id).addEventListener('input', () => { syncContextGenerateLayoutInputs(); markGenerateLayoutCustom(); });
+  });
+
+  wireSegmentedSelect('contextGenerateLayoutMode', () => {
+    const mode = $('contextGenerateLayoutMode').value;
+    if ($('contextGenerateArrangementSource').value === 'PRESET') {
+      renderContextGeneratePresetOptions(mode);
+    }
+    syncContextGenerateLayoutInputs();
+  });
+  $('contextGenerateCustomize').addEventListener('click', () => {
+    $('contextGenerateArrangementSource').value = 'CUSTOM';
+    syncContextGenerateLayoutInputs();
+  });
+  $('contextGenerateUsePreset').addEventListener('click', () => {
+    $('contextGenerateArrangementSource').value = 'PRESET';
+    renderContextGeneratePresetOptions($('contextGenerateLayoutMode').value, $('contextGeneratePreset').value);
+    syncContextGenerateLayoutInputs();
+  });
+  wireSegmentedSelect('contextGenerateGridRowsMode', () => { syncContextGenerateLayoutInputs(); markGenerateLayoutCustom(); });
+  wireSegmentedSelect('contextGenerateLayoutDirection', () => { syncContextGenerateLayoutInputs(); markGenerateLayoutCustom(); });
+  wireSegmentedSelect('contextGenerateLayoutWrap', () => { syncContextGenerateLayoutInputs(); markGenerateLayoutCustom(); });
+  wireSegmentedSelect('generatePresetRowsMode', syncGeneratePresetEditorFields);
+  $('generatePresetMode').addEventListener('change', syncGeneratePresetEditorFields);
+  syncContextGenerateLayoutInputs();
+  syncGeneratePresetEditorFields();
+
+  $('defaultGeneratePreset').addEventListener('change', () => {
+    currentPluginSettings.defaultGeneratePresetId = $('defaultGeneratePreset').value;
+    persistGeneratePresetSettings();
+    renderGeneratePresetControls();
+  });
+
+  $('generatePresetAdd').addEventListener('click', () => openGeneratePresetEditor());
+  $('generatePresetCancel').addEventListener('click', () => { $('generatePresetEditor').hidden = true; editingGeneratePresetId = null; });
+  $('generatePresetSave').addEventListener('click', () => {
+    const name = $('generatePresetName').value.trim() || 'Preset';
+    const mode = $('generatePresetMode').value;
+    const id = editingGeneratePresetId || `preset-${Date.now()}`;
+    const basePadding = { paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0 };
+    const layout = mode === 'GRID'
+      ? {
+          ...basePadding,
+          mode: 'GRID',
+          columns: Math.max(1, Number($('generatePresetColumns').value) || 5),
+          rowsMode: $('generatePresetRowsMode').value,
+          rows: Math.max(1, Number($('generatePresetRows').value) || 1),
+          columnGap: Number($('generatePresetColumnGap').value) || 0,
+          rowGap: Number($('generatePresetRowGap').value) || 0,
+          columnSizing: 'HUG', rowSizing: 'HUG', columnSize: 240, rowSize: 240
+        }
+      : {
+          ...basePadding,
+          mode: 'FLOW',
+          direction: $('generatePresetDirection').value,
+          wrap: $('generatePresetWrap').value === 'true',
+          widthMode: $('generatePresetWrap').value === 'true' && $('generatePresetDirection').value === 'HORIZONTAL' ? 'FIXED' : 'AUTO',
+          heightMode: $('generatePresetWrap').value === 'true' && $('generatePresetDirection').value === 'VERTICAL' ? 'FIXED' : 'AUTO',
+          width: Math.max(1, Number($('generatePresetWidth').value) || 1200),
+          height: 800,
+          itemSpacing: Number($('generatePresetItemSpacing').value) || 0,
+          counterAxisSpacing: Number($('generatePresetCounterSpacing').value) || 0,
+          primaryAxisAlignItems: 'MIN', counterAxisAlignItems: 'MIN'
+        };
+    const preset = { id, name, layout };
+    const list = [...(currentPluginSettings.generatePresets || [])];
+    const existingIndex = list.findIndex((item) => item.id === id);
+    if (existingIndex >= 0) list[existingIndex] = preset;
+    else list.push(preset);
+    currentPluginSettings.generatePresets = list;
+    persistGeneratePresetSettings();
+    $('generatePresetEditor').hidden = true;
+    editingGeneratePresetId = null;
+    renderGeneratePresetControls();
+  });
+
   $('contextGenerateDisabledCopy').addEventListener('click', () => {
     setError();
     if (!manifest) return;
@@ -5670,7 +6690,8 @@
       pluginMessage: {
         type: 'context-generate-disabled-copy',
         manifest,
-        focusResults: currentPluginSettings.focusGeneratedResults
+        focusResults: currentPluginSettings.focusGeneratedResults,
+        layout: contextGenerateNativeLayout()
       }
     }, '*');
   });
@@ -5709,7 +6730,8 @@
         sourceTargetId: $('contextGenerateFrom').value,
         destinationTargetIds,
         stateIds: selectedContextGenerateStates(),
-        focusResults: currentPluginSettings.focusGeneratedResults
+        focusResults: currentPluginSettings.focusGeneratedResults,
+        layout: contextGenerateNativeLayout()
       }
     }, '*');
   });
@@ -5744,18 +6766,43 @@
     requestLibraryPublishStatus($('systemLayer').value, 'core');
   });
 
-  $('registerSystemLayer').addEventListener('click', () => {
-    setError();
-    if ($('registerSystemLayer').dataset.publishReady !== 'true') {
-      $('systemStatusNote').textContent = 'Publish the current library in Figma, then Refresh status.';
-      return;
-    }
-    const layer = $('systemLayer').value;
-    const role = $('systemRole').value;
-    const flavourId = role === 'flavour' ? selectedFlavourId() : null;
+  function submitSystemLayerRegistration({ layer, role, flavourId }) {
     $('systemStatusNote').textContent = `Registering ${role} ${layer}…`;
     $('registerSystemLayer').disabled = true;
     parent.postMessage({ pluginMessage: { type: 'register-system-layer', layer, role, flavourId } }, '*');
+  }
+
+  $('registerSystemLayer').addEventListener('click', () => {
+    setError();
+    const layer = $('systemLayer').value;
+    const role = $('systemRole').value;
+    const masterRegistration = role === 'master';
+    if (!masterRegistration && $('registerSystemLayer').dataset.publishReady !== 'true') {
+      $('systemStatusNote').textContent = 'Publish the current library in Figma, then Refresh status.';
+      return;
+    }
+    const flavourId = role === 'flavour' ? selectedFlavourId() : null;
+    const registration = { layer, role, flavourId };
+    const existingMaster = role === 'master' ? registeredMasterForLayer(layer) : null;
+    const currentMaster = role === 'master' && currentFileMatchesRegisteredMaster(layer);
+    if (existingMaster && !currentMaster) {
+      openReplaceMasterConfirm(registration, existingMaster);
+      return;
+    }
+    submitSystemLayerRegistration(registration);
+  });
+
+  $('replaceMasterCancel').addEventListener('click', closeReplaceMasterConfirm);
+  $('replaceMasterConfirmAction').addEventListener('click', () => {
+    const registration = pendingMasterRegistration;
+    closeReplaceMasterConfirm();
+    if (registration) submitSystemLayerRegistration(registration);
+  });
+  $('replaceMasterConfirm').addEventListener('click', (event) => {
+    if (event.target === $('replaceMasterConfirm')) closeReplaceMasterConfirm();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !$('replaceMasterConfirm').hidden) closeReplaceMasterConfirm();
   });
 
   $('syncSystemLayer').addEventListener('click', () => {
@@ -6013,12 +7060,6 @@
   });
 
 
-  setFlavourView('project');
-  refreshRepository({ loadLatest: true });
-  requestFileContext();
-  requestProjectThemeStatus();
-  requestLibraryPublishStatus($('systemLayer').value, 'core');
-
   onmessage = (event) => {
     const message = event.data.pluginMessage;
     if (!message) return;
@@ -6159,12 +7200,17 @@
           ? requestedDefault
           : 'tools',
         focusGeneratedResults: message.payload?.focusGeneratedResults !== false,
+        levelsOpenOnHover: message.payload?.levelsOpenOnHover !== false,
+        defaultGeneratePresetId: typeof message.payload?.defaultGeneratePresetId === 'string' ? message.payload.defaultGeneratePresetId : 'grid-5-auto',
+        generatePresets: Array.isArray(message.payload?.generatePresets) ? message.payload.generatePresets : [],
         windowWidth: Number(message.payload?.windowWidth) || 780,
         windowHeight: Number(message.payload?.windowHeight) || 860,
         fontSizePx: Number(message.payload?.fontSizePx) || 14
       };
       $('defaultOpeningTab').value = currentPluginSettings.defaultTab;
       $('focusGeneratedResultsToggle').checked = currentPluginSettings.focusGeneratedResults;
+      $('levelsOpenOnHoverToggle').checked = currentPluginSettings.levelsOpenOnHover;
+      renderGeneratePresetControls();
       $('windowWidthRange').value = String(currentPluginSettings.windowWidth);
       $('windowHeightRange').value = String(currentPluginSettings.windowHeight);
       $('windowWidthValue').value = `${currentPluginSettings.windowWidth}px`;
@@ -6187,9 +7233,24 @@
         $('flowPublish')?.classList.toggle('active', !p.ready);
         $('flowRegister')?.classList.toggle('active', Boolean(p.ready));
       } else {
+        const masterRegistration = $('systemRole').value === 'master';
+        const selectedLayer = $('systemLayer').value;
+        const canRegister = Boolean(p.ready) || masterRegistration;
         $('systemStatusNote').textContent = p.message || '';
-        $('registerSystemLayer').dataset.publishReady = p.ready ? 'true' : 'false';
-        $('registerSystemLayer').disabled = !p.ready;
+        if (masterRegistration && !p.ready) {
+          const layerName = masterLayerLabel(selectedLayer);
+          if (selectedLayer === 'foundations') {
+            $('systemStatusNote').textContent = p.total
+              ? (p.message || 'Register this file as Foundations master; publish when ready to expose bindings.')
+              : 'Ready to register this new file as the Foundations master. Build Core, Apply, then publish it in Figma.';
+          } else {
+            $('systemStatusNote').textContent = p.total
+              ? `${p.message || 'This file is not yet fully published.'} You can still register it as the ${layerName} master now, then publish and re-register to expose its assets.`
+              : `Ready to register this file as the ${layerName} master. Publish and re-register later to expose its library assets.`;
+          }
+        }
+        $('registerSystemLayer').dataset.publishReady = canRegister ? 'true' : 'false';
+        $('registerSystemLayer').disabled = !canRegister;
       }
       return;
     }
@@ -6247,6 +7308,9 @@
     }
     if (message.type === 'file-context') {
       const p = message.payload || {};
+      currentFileContext = p;
+      renderLevelsMenu();
+      updateRegisterSystemLabel();
       const isFlavourFoundations = p.system?.role === 'flavour' && p.system?.layer === 'foundations';
       setFlavourView(isFlavourFoundations ? 'library' : 'project');
       if (isFlavourFoundations && p.system?.flavourId && [...$('flavourSelect').options].some((option) => option.value === p.system.flavourId)) {
@@ -6295,15 +7359,27 @@
     if (message.type === 'analysis') {
       renderDiff(message.payload);
       $('analyse').disabled = false;
-      $('apply').disabled = Boolean(message.payload.safety?.blocked) || message.payload.diff.totals.create + message.payload.diff.totals.update === 0;
+      const actionable = (message.payload.diff.totals.create || 0)
+        + (message.payload.diff.totals.update || 0)
+        + (message.payload.diff.variables?.orphaned?.length || 0);
+      $('apply').disabled = actionable === 0;
+      if (message.payload.safety?.blocked && actionable > 0) {
+        $('statusText').textContent = `Inspected · ${actionable} managed update${actionable === 1 ? '' : 's'} ready`;
+      }
     }
     if (message.type === 'applied') {
       renderDiff(message.payload);
-      if (message.payload.result?.deferredValues) {
+      if (message.payload.result?.removedOrphanedVariables) {
+        const removed = message.payload.result.removedOrphanedVariables;
+        $('statusText').textContent = `Applied · ${removed} stale BufferCore variable${removed === 1 ? '' : 's'} removed`;
+      } else if (message.payload.result?.deferredValues) {
         $('statusText').textContent = `Applied · ${message.payload.result.deferredValues} baseline values awaiting a Flavour`;
       }
       $('analyse').disabled = false;
-      $('apply').disabled = Boolean(message.payload.safety?.blocked) || message.payload.diff.totals.create + message.payload.diff.totals.update === 0;
+      const actionable = (message.payload.diff.totals.create || 0)
+        + (message.payload.diff.totals.update || 0)
+        + (message.payload.diff.variables?.orphaned?.length || 0);
+      $('apply').disabled = actionable === 0;
     }
     if (message.type === 'error') {
       $('statusText').textContent = 'Error';
@@ -6316,6 +7392,17 @@
       $('reconcileProjectFlavour').disabled = false;
     }
   };
+
+  // Only start talking to the plugin after the response listener exists.
+  // Otherwise fast bridge/plugin responses can arrive before `onmessage` is
+  // installed and the UI falsely reports that the repository bridge is down.
+  parent.postMessage({ pluginMessage: { type: 'plugin-settings-get' } }, '*');
+  setFlavourView('project');
+  refreshRepository({ loadLatest: true });
+  requestFileContext();
+  requestProjectThemeStatus();
+  requestLibraryPublishStatus($('systemLayer').value, 'core');
 </script>
+
 </body>
 </html>

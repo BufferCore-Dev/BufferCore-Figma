@@ -116,8 +116,17 @@ function colourPresentation(token) {
     if (root === "identity" || root === "ground") {
       const rampIndex = parts.indexOf("ramp");
       if (rampIndex >= 0 && parts[rampIndex + 1]) {
-        const tone = tonePresentation(parts.slice(rampIndex + 2), [displaySegment(root), `Ramp ${parts[rampIndex + 1]}`]);
-        if (tone) return { ...tone, ranks: [rootRank[root], Number(parts[rampIndex + 1]), tone.ranks.at(-1)] };
+        // Preserve qualifiers that sit between the colour family and `ramp`.
+        // In particular `color.ground.dark.ramp.*` must not collapse onto the
+        // normal `color.ground.ramp.*` hierarchy, otherwise Figma receives two
+        // variables with the same name and createVariable() fails.
+        const qualifiers = parts.slice(1, rampIndex).map(displaySegment);
+        const prefix = [displaySegment(root), ...qualifiers, `Ramp ${parts[rampIndex + 1]}`];
+        const tone = tonePresentation(parts.slice(rampIndex + 2), prefix);
+        if (tone) {
+          const qualifierRanks = parts.slice(1, rampIndex).map((part) => part === "dark" ? 2 : scaleRank(part));
+          return { ...tone, ranks: [rootRank[root], ...qualifierRanks, Number(parts[rampIndex + 1]), tone.ranks.at(-1)] };
+        }
       }
     }
     if (root === "neutral" && parts[1] != null) {
@@ -134,26 +143,142 @@ function colourPresentation(token) {
   }
 
   if (token.layer === "semantic") {
-    // Semantic colour is ordered by day-to-day design usage, not source-token order.
-    // Shared tones are deliberately grouped at the bottom because they are useful
-    // foundations for semantic roles, but are reached for less often in Figma.
-    const rootOrder = { fill: 1, text: 2, border: 3, surface: 4, canvas: 5, interaction: 6, tones: 7, overlay: 8, shadow: 9 };
-    const roleOrder = { general: 1, neutral: 2, primary: 3, secondary: 4, accent: 5, success: 6, warning: 7, error: 8, info: 9, context: 10, inverse: 11, strong: 12, soft: 13, subtle: 14, bold: 15 };
+    // Figma colour IA mirrors how designers browse colour: purpose first,
+    // then colour family, then intensity/state. Do not flatten family + state
+    // into one leaf: e.g. Fill / Primary / Subtle -> Soft -> Base -> Strong -> Bold.
+    const rootOrder = { fill: 1, border: 3, surface: 4, canvas: 5, interaction: 6, tones: 7, overlay: 8, shadow: 9, text: 40 };
+    const familyOrder = { general: 1, neutral: 2, primary: 3, secondary: 4, accent: 5, success: 6, warning: 7, error: 8, info: 9, context: 10, inverse: 11, tertiary: 12 };
     const root = parts[0];
 
+    const intensityRank = (leafParts = []) => {
+      if (!leafParts.length) return 30; // Base sits in the middle of normal scales.
+      const key = leafParts.join('.');
+      const exact = {
+        muted: 10,
+        subtle: 15,
+        soft: 20,
+        base: 30,
+        strong: 40,
+        bold: 50,
+        inverse: 60,
+        'inverse.muted': 61,
+        'inverse.subtle': 62,
+        'inverse.strong': 64,
+        'strong.inverse': 65,
+        visited: 70,
+        'visited.inverse': 75,
+        tertiary: 80
+      };
+      if (exact[key] != null) return exact[key];
+      // Compound states should still remain stable and after the core scale.
+      return 90 + leafParts.reduce((total, part, index) => total + (scaleRank(part) * (index + 1)), 0);
+    };
+
+    const leafName = (leafParts = []) => leafParts.length ? leafParts.map(displaySegment).join(' ') : 'Base';
+    const familyRank = (family) => familyOrder[family] || 50;
+
+    // Tone scales keep their family folder and are explicitly ordered
+    // light -> Base -> dark.
     if (["primary", "secondary", "accent"].includes(root)) {
       const toneOrder = { primary: 1, secondary: 2, accent: 3 };
       const tone = tonePresentation(parts.slice(1), ["Tones", displaySegment(root)]);
       if (tone) return { ...tone, ranks: [rootOrder.tones, toneOrder[root], tone.ranks.at(-1)] };
     }
 
+    // Text has a few root-level roles (Base/Subtle/Muted/Inverse). Keep all of
+    // those together under a predictable Neutral family instead of scattering
+    // them beside Primary/Secondary/etc.
+    if (root === "text") {
+      const knownFamilies = new Set(["primary", "secondary", "accent", "success", "warning", "error", "info", "context"]);
+      const first = parts[1];
+      if (knownFamilies.has(first)) {
+        const leafParts = parts.slice(2);
+        return {
+          segments: ["Text", displaySegment(first), leafName(leafParts)],
+          ranks: [rootOrder.text, familyRank(first), intensityRank(leafParts)]
+        };
+      }
+      const leafParts = parts.slice(1);
+      return {
+        segments: ["Text", "Neutral", leafName(leafParts)],
+        ranks: [rootOrder.text, familyOrder.neutral, intensityRank(leafParts)]
+      };
+    }
+
+    // Fill and Border are the main designer-facing colour scales. The family
+    // must remain a folder, with intensity ordered light -> Base -> dark.
+    if (root === "fill" || root === "border") {
+      const family = parts[1] || "general";
+      const leafParts = parts.slice(2);
+      return {
+        segments: [displaySegment(root), displaySegment(family), leafName(leafParts)],
+        ranks: [rootOrder[root], familyRank(family), intensityRank(leafParts)]
+      };
+    }
+
+    // Surface has intentional subfamilies (General/Identity). Preserve those
+    // rather than flattening them into unreadable leaves.
+    if (root === "surface") {
+      if (parts[1] === "general" || parts[1] === "identity") {
+        const group = parts[1];
+        const family = parts[2] || "base";
+        const leafParts = parts.slice(3);
+        return {
+          segments: ["Surface", displaySegment(group), displaySegment(family), leafName(leafParts)],
+          ranks: [rootOrder.surface, group === "general" ? 1 : 2, familyRank(family), intensityRank(leafParts)]
+        };
+      }
+      const family = parts[1] || "general";
+      const leafParts = parts.slice(2);
+      return {
+        segments: ["Surface", displaySegment(family), leafName(leafParts)],
+        ranks: [rootOrder.surface, familyRank(family), intensityRank(leafParts)]
+      };
+    }
+
+    if (root === "canvas") {
+      const family = parts[1] || "base";
+      const leafParts = parts.slice(2);
+      return {
+        segments: ["Canvas", displaySegment(family), ...(leafParts.length ? [leafName(leafParts)] : [])],
+        ranks: [rootOrder.canvas, familyRank(family), ...(leafParts.length ? [intensityRank(leafParts)] : [])]
+      };
+    }
+
+    // Focus/Link/Placeholder live under Interaction but keep their own folder.
     if (["focus", "link", "placeholder"].includes(root)) {
       const interactionOrder = { link: 1, focus: 2, placeholder: 3 };
-      return { segments: ["Interaction", displaySegment(root), ...parts.slice(1).map(displaySegment)], ranks: [rootOrder.interaction, interactionOrder[root], ...parts.slice(1).map((part) => roleOrder[part] || scaleRank(part))] };
+      const leafParts = parts.slice(1);
+      return {
+        segments: ["Interaction", displaySegment(root), leafName(leafParts)],
+        ranks: [rootOrder.interaction, interactionOrder[root], intensityRank(leafParts)]
+      };
+    }
+
+    if (root === "overlay") {
+      const family = parts[1] || "general";
+      const leafParts = parts.slice(2);
+      return {
+        segments: ["Overlay", displaySegment(family), leafName(leafParts)],
+        ranks: [rootOrder.overlay, familyRank(family), intensityRank(leafParts)]
+      };
+    }
+
+    if (root === "shadow") {
+      const leafParts = parts.slice(1);
+      return {
+        segments: ["Shadow", leafName(leafParts)],
+        ranks: [rootOrder.shadow, intensityRank(leafParts)]
+      };
     }
 
     if (root) {
-      return { segments: [displaySegment(root), ...parts.slice(1).map(displaySegment)], ranks: [rootOrder[root] || 50, ...parts.slice(1).map((part) => roleOrder[part] || scaleRank(part))] };
+      const family = parts[1] || "general";
+      const leafParts = parts.slice(2);
+      return {
+        segments: [displaySegment(root), displaySegment(family), leafName(leafParts)],
+        ranks: [rootOrder[root] || 50, familyRank(family), intensityRank(leafParts)]
+      };
     }
   }
   return null;
@@ -293,6 +418,22 @@ function isFluidClamp(value) {
   return /^clamp\(\s*-?\d+(?:\.\d+)?(?:rem|px)\s*,[\s\S]+,[\s\S]+\)$/i.test(String(value ?? "").trim());
 }
 
+function isFluidSpacingToken(token) {
+  const parts = token?.path || [];
+  if (token?.foundation !== "spacing") return false;
+  return (parts[0] === "fluid" && parts.length >= 2)
+    || (parts[0] === "size" && parts[1] === "fluid" && parts.length >= 3);
+}
+
+function isEffectBlurToken(token) {
+  return token?.foundation === "effects" && (token?.path || [])[0] === "blur";
+}
+
+function isFluidContainerToken(token) {
+  const parts = token?.path || [];
+  return token?.foundation === "containers" && (parts.includes("gutter") || parts.includes("space"));
+}
+
 function figmaType(token, config, tokenById = new Map(), seen = new Set()) {
   // Canonical colour tokens can intentionally be unset (`initial`) in the
   // framework baseline, so their literal valueType may be `string`. Their
@@ -301,7 +442,8 @@ function figmaType(token, config, tokenById = new Map(), seen = new Set()) {
 
   const variant = primaryVariant(token);
   const raw = variant?.resolved ?? variant?.rawValue;
-  if (token.foundation === "typography" && isFluidClamp(raw)) return "FLOAT";
+  if (isEffectBlurToken(token)) return "FLOAT";
+  if ((token.foundation === "typography" || isFluidSpacingToken(token) || isFluidContainerToken(token)) && isFluidClamp(raw)) return "FLOAT";
 
   const alias = variant ? aliasReference(variant) : null;
   if (alias && !seen.has(alias)) {
@@ -317,18 +459,30 @@ function figmaType(token, config, tokenById = new Map(), seen = new Set()) {
   return config.valueTypes?.[token.valueType] || null;
 }
 
+function ruleMatchesToken(token, match = {}) {
+  if (match.foundation && match.foundation !== token.foundation) return false;
+  if (match.layer && match.layer !== token.layer) return false;
+  if (match.valueType && match.valueType !== token.valueType) return false;
+  if (match.pathPrefix && !pathStartsWith(token.path || [], match.pathPrefix)) return false;
+  if (match.pathContains && !(token.path || []).includes(match.pathContains)) return false;
+  if (match.cssVariableIncludes && !String(token.cssVariable || "").includes(match.cssVariableIncludes)) return false;
+  return true;
+}
+
 function scopesFor(token, config) {
   for (const rule of config.scopeRules || []) {
-    const match = rule.match || {};
-    if (match.foundation && match.foundation !== token.foundation) continue;
-    if (match.layer && match.layer !== token.layer) continue;
-    if (match.valueType && match.valueType !== token.valueType) continue;
-    if (match.pathPrefix && !pathStartsWith(token.path || [], match.pathPrefix)) continue;
-    if (match.pathContains && !(token.path || []).includes(match.pathContains)) continue;
-    if (match.cssVariableIncludes && !String(token.cssVariable || "").includes(match.cssVariableIncludes)) continue;
-    return rule.scopes || [];
+    if (!ruleMatchesToken(token, rule.match || {})) continue;
+    return Array.isArray(rule.scopes) ? rule.scopes : [];
   }
   return [];
+}
+
+function publishFor(token, collection, config) {
+  for (const rule of config.publishRules || []) {
+    if (!ruleMatchesToken(token, rule.match || {})) continue;
+    return rule.publish !== false;
+  }
+  return collection.publish !== false;
 }
 
 function aliasReference(variant) {
@@ -413,19 +567,47 @@ function toPx(value, rootFontSizePx = 16) {
 }
 
 function evaluateFluidClamp(value, viewportWidthPx, rootFontSizePx = 16) {
-  const match = String(value ?? "").trim().match(/^clamp\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^\)]+)\s*\)$/i);
+  const source = String(value ?? "").trim();
+  const match = source.match(/^clamp\(\s*([^,]+)\s*,\s*([\s\S]+)\s*,\s*([^,]+)\s*\)$/i);
   if (!match) return null;
   const minimum = toPx(match[1], rootFontSizePx);
   const maximum = toPx(match[3], rootFontSizePx);
   if (minimum == null || maximum == null) return null;
 
-  const middle = match[2].trim();
-  const term = middle.match(/^(-?\d+(?:\.\d+)?)(rem|px)\s*([+-])\s*(\d+(?:\.\d+)?)vw$/i);
-  if (!term) return null;
-  const base = toPx(`${term[1]}${term[2]}`, rootFontSizePx);
-  const vw = Number(term[4]) * viewportWidthPx / 100;
-  const preferred = term[3] === "-" ? base - vw : base + vw;
-  return Math.max(minimum, Math.min(maximum, preferred));
+  let middle = match[2].trim();
+  if (/^calc\([\s\S]+\)$/i.test(middle)) middle = middle.slice(5, -1).trim();
+
+  // Pure viewport form used by container gutters: <vw>.
+  const viewportOnly = middle.match(/^(-?\d+(?:\.\d+)?)vw$/i);
+  if (viewportOnly) {
+    const preferred = Number(viewportOnly[1]) * viewportWidthPx / 100;
+    return Math.max(minimum, Math.min(maximum, preferred));
+  }
+
+  // Standard fluid form used by typography: <length> +/- <vw>.
+  const simple = middle.match(/^(-?\d+(?:\.\d+)?)(rem|px)\s*([+-])\s*(\d+(?:\.\d+)?)vw$/i);
+  if (simple) {
+    const base = toPx(`${simple[1]}${simple[2]}`, rootFontSizePx);
+    const vw = Number(simple[4]) * viewportWidthPx / 100;
+    const preferred = simple[3] === "-" ? base - vw : base + vw;
+    return Math.max(minimum, Math.min(maximum, preferred));
+  }
+
+  // BufferCore spatial form:
+  //   <base> + ((1vw - <viewport floor>) * <factor>)
+  // This intentionally evaluates at the configured Small / Medium / Large
+  // viewport samples so Figma mirrors the CSS clamp endpoints and midpoint.
+  const spatial = middle.match(/^(-?\d+(?:\.\d+)?)(rem|px)\s*([+-])\s*\(\(\s*(\d+(?:\.\d+)?)vw\s*-\s*(-?\d+(?:\.\d+)?)(rem|px)\s*\)\s*\*\s*(-?\d+(?:\.\d+)?)\s*\)$/i);
+  if (spatial) {
+    const base = toPx(`${spatial[1]}${spatial[2]}`, rootFontSizePx);
+    const viewportTerm = Number(spatial[4]) * viewportWidthPx / 100;
+    const floor = toPx(`${spatial[5]}${spatial[6]}`, rootFontSizePx);
+    const delta = (viewportTerm - floor) * Number(spatial[7]);
+    const preferred = spatial[3] === "-" ? base - delta : base + delta;
+    return Math.max(minimum, Math.min(maximum, preferred));
+  }
+
+  return null;
 }
 
 function viewportSampling(config) {
@@ -455,6 +637,10 @@ function toFigmaLiteral(token, variant, config, diagnostics, tokenById = new Map
   if (type !== "FLOAT") return raw;
 
   let parsed = parseNumberWithUnit(raw);
+  if (!parsed && isEffectBlurToken(token)) {
+    const blur = String(raw ?? "").trim().match(/^blur\(\s*(-?\d+(?:\.\d+)?)(px|rem|em)?\s*\)$/i);
+    if (blur) parsed = { number: Number(blur[1]), unit: (blur[2] || "px").toLowerCase() };
+  }
   if (!parsed && viewportWidthPx != null && isFluidClamp(raw)) {
     const sampled = evaluateFluidClamp(raw, viewportWidthPx, Number(config.units?.rootFontSizePx || 16));
     if (sampled != null) return Number(sampled.toFixed(3));
@@ -493,8 +679,9 @@ function tokenValues(token, config, diagnostics, tokenById) {
     const targetRaw = targetVariant?.resolved ?? targetVariant?.rawValue;
     const fluid = isFluidClamp(raw);
     const fluidAlias = Boolean(alias && target && isFluidClamp(targetRaw));
+    const fluidSpacing = isFluidSpacingToken(token);
 
-    if (sampling && (fluid || fluidAlias) && Object.keys(variant.context?.modes || {}).length === 0) {
+    if (sampling && (fluid || fluidAlias || fluidSpacing) && Object.keys(variant.context?.modes || {}).length === 0) {
       for (const mode of sampling.values) {
         values.push({
           context: { modes: { [sampling.id]: mode.id }, conditions: [...(variant.context?.conditions || [])] },
@@ -549,7 +736,7 @@ function collectionModeDimensions(tokens, canonicalModeDimensions, collection, c
         const target = alias ? tokenById.get(alias) : null;
         const targetVariant = target ? primaryVariant(target) : null;
         const targetRaw = targetVariant?.resolved ?? targetVariant?.rawValue;
-        if (isFluidClamp(raw) || isFluidClamp(targetRaw)) used.add(sampling.id);
+        if (isFluidClamp(raw) || isFluidClamp(targetRaw) || isFluidSpacingToken(token)) used.add(sampling.id);
       }
     }
   }
@@ -677,14 +864,26 @@ function buildTextStyles(tokens, config, diagnostics) {
         }
         bindings[property] = styleBinding(token, config, diagnostics, tokenById);
       }
+      const prefix = config.textStyles?.searchPrefixes?.[role] || "";
+      const leafName = `${prefix}${index}`;
       if (missing.length) {
-        diagnostics.warnings.push({ code: "figma-text-style-incomplete", style: `${title(role)} / ${index}`, missing });
+        diagnostics.warnings.push({ code: "figma-text-style-incomplete", style: `${title(role)} / ${leafName}`, missing });
         continue;
       }
+
+      const lineHeightFallback = Number(bindings['line-height']?.fallback);
+      const lineHeight = Number.isFinite(lineHeightFallback)
+        ? (config.textStyles?.lineHeight?.unitlessAsPercent !== false && lineHeightFallback > 0 && lineHeightFallback <= 5
+            ? { unit: "PERCENT", value: Number((lineHeightFallback * 100).toFixed(3)) }
+            : { unit: "PIXELS", value: lineHeightFallback })
+        : null;
+
       styles.push({
         id: `text.${role}.${index}`,
         type: "TEXT",
-        name: `${title(role)} / ${index}`,
+        name: `${title(role)} / ${leafName}`,
+        leadingTrim: config.textStyles?.verticalTrim?.figma === "CAP_HEIGHT" ? "CAP_HEIGHT" : "NONE",
+        ...(lineHeight ? { lineHeight } : {}),
         bindings
       });
     }
@@ -995,6 +1194,7 @@ export function validateFigmaManifest(manifest) {
 
   const collectionIds = new Set((manifest.collections || []).map((item) => item.id));
   const variableIds = new Set();
+  const variableNamesByCollection = new Map();
   for (const variable of manifest.variables || []) {
     if (!variable.id || !variable.name || !variable.collectionId || !variable.type || !Array.isArray(variable.values)) {
       errors.push(`Invalid variable ${variable.id || "<unknown>"}`);
@@ -1002,8 +1202,46 @@ export function validateFigmaManifest(manifest) {
     if (variableIds.has(variable.id)) errors.push(`Duplicate variable id ${variable.id}`);
     variableIds.add(variable.id);
     if (!collectionIds.has(variable.collectionId)) errors.push(`Unknown collection ${variable.collectionId} for ${variable.id}`);
+
+    const figmaVariableName = variable.figmaName || variable.name;
+    const nameKey = `${variable.collectionId}|${figmaVariableName}`;
+    const previous = variableNamesByCollection.get(nameKey);
+    if (previous) {
+      errors.push(`Duplicate Figma variable name ${figmaVariableName} in ${variable.collectionId}: ${previous} and ${variable.id}`);
+    } else {
+      variableNamesByCollection.set(nameKey, variable.id);
+    }
   }
   return errors;
+}
+
+export function disambiguateFigmaHierarchyLeaves(variables, separator = " / ") {
+  const variablesByCollection = new Map();
+  for (const variable of variables || []) {
+    const rows = variablesByCollection.get(variable.collectionId) || [];
+    rows.push(variable);
+    variablesByCollection.set(variable.collectionId, rows);
+  }
+  for (const rows of variablesByCollection.values()) {
+    const reserved = new Set(rows.map((variable) => variable.name));
+    for (const variable of rows) {
+      const prefix = `${variable.name}${separator}`;
+      const isHierarchyLeaf = rows.some((candidate) => candidate !== variable && candidate.name.startsWith(prefix));
+      if (!isHierarchyLeaf) continue;
+      let suffix = "Base";
+      let nextName = `${variable.name}${separator}${suffix}`;
+      let index = 2;
+      while (reserved.has(nextName)) {
+        suffix = `Base ${index++}`;
+        nextName = `${variable.name}${separator}${suffix}`;
+      }
+      reserved.delete(variable.name);
+      reserved.add(nextName);
+      variable.name = nextName;
+      variable.figmaName = `${variable.figmaName}${separator}${suffix}`;
+    }
+  }
+  return variables;
 }
 
 export function buildFigmaManifest({
@@ -1063,7 +1301,7 @@ export function buildFigmaManifest({
       sortKey: presentationFor(token, config).sortKey,
       type,
       scopes: scopesFor(token, config),
-      publish: collection.publish,
+      publish: publishFor(token, collection, config),
       codeSyntax: { WEB: `var(${token.cssVariable})` },
       provenance: {
         flavourOverride: token.layer === "primitive" && (token.variants || []).some((variant) => variant.source?.kind === "flavour"),
@@ -1072,6 +1310,8 @@ export function buildFigmaManifest({
       values: tokenValues(token, config, diagnostics, tokenById)
     });
   }
+
+  disambiguateFigmaHierarchyLeaves(variables, config.naming?.separator || " / ");
 
   const collectionOrder = new Map(collections.map((collection, index) => [collection.id, index]));
   variables.sort((a, b) => {

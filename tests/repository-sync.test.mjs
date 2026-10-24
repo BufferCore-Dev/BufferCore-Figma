@@ -17,7 +17,7 @@ function fakeRunner({ branch = 'main', commit = 'abc123', status = '', remoteUrl
     if (joined.startsWith('remote get-url')) return remoteUrl;
     if (args[0] === 'switch' && args[1] && args[1] !== '--track') { currentBranch = args[1]; return ''; }
     if (args[0] === 'switch' && args[1] === '--track') { currentBranch = args[3]; return ''; }
-    if (args[0] === 'pull') { if (afterCommit) currentCommit = afterCommit; return ''; }
+    if (args[0] === 'merge' && args[1] === '--ff-only') { if (afterCommit) currentCommit = afterCommit; return ''; }
     if (args[0] === 'fetch') return '';
     throw new Error(`Unexpected command: ${command} ${joined}`);
   };
@@ -38,13 +38,13 @@ test('sync refuses to pull a dirty repository by default', () => {
   assert.throws(() => syncRepository('.', { run }), /uncommitted changes/);
 });
 
-test('sync uses fetch plus fast-forward-only pull', () => {
+test('sync uses fetch plus fast-forward-only merge', () => {
   const { run, calls } = fakeRunner({ afterCommit: 'def456' });
   const result = syncRepository('.', { run });
   assert.equal(result.changed, true);
   assert.equal(result.commit, 'def456');
   assert.ok(calls.some((call) => call.join(' ') === 'git fetch --prune origin'));
-  assert.ok(calls.some((call) => call.join(' ') === 'git pull --ff-only origin main'));
+  assert.ok(calls.some((call) => call.join(' ') === 'git merge --ff-only origin/main'));
 });
 
 test('sync can select a configured branch before pulling', () => {
@@ -74,7 +74,7 @@ test('development plugin manifest allows only the local repository bridge', () =
 
 test('plugin UI exposes repository pull, branch, commit and Flavour controls with manual fallback', () => {
   const html = fs.readFileSync(new URL('../plugin/src/ui.html', import.meta.url), 'utf8');
-  for (const expected of ['Repository', 'Core branch', 'Core commit', 'Flavours branch', 'Pull + build', 'flavourSelect', 'Manual manifest fallback']) {
+  for (const expected of ['Repository', 'Core', 'Commit', 'Flavours', 'Build Core', 'flavourSelect', 'Manual manifest fallback']) {
     assert.match(html, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });
@@ -121,4 +121,10 @@ test('repository bridge preserves library-family registration with current auth 
   assert.match(source, /\/library-family\/status/);
   assert.match(source, /\/auth\/github/);
   assert.match(source, /body\.source \|\| 'local'/);
+});
+
+
+test('repository bridge retains Figma file keys for registered library-family layers', () => {
+  const source = fs.readFileSync(new URL('../tools/repository-bridge.mjs', import.meta.url), 'utf8');
+  assert.match(source, /fileKey: payload\.fileKey \|\| null/);
 });

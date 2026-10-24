@@ -202,6 +202,18 @@ function canonicalModeValue(definition, entry) {
   if (definition.type === 'COLOR' && literal && typeof literal === 'object') {
     literal = { r: literal.r, g: literal.g, b: literal.b, a: literal.a ?? 1 };
   }
+  // Figma's OPACITY variable scope stores values in percentage space (45 = 45%).
+  // BufferCore's canonical CSS opacity scale remains normalised (0.45 = 45%).
+  // Project the value here as well as at apply-time so Inspect can detect that an
+  // existing 0.45 Figma value needs updating to 45 instead of reporting 0 changes.
+  if (definition.type === 'FLOAT' && typeof literal === 'number') {
+    const isCoreOpacityPrimitive = String(definition.id || '').startsWith('opacity.')
+      || String(definition.cssVariable || '').startsWith('--bc-opacity-');
+    if (((definition.scopes || []).includes('OPACITY') || isCoreOpacityPrimitive)
+      && literal >= 0 && literal <= 1) {
+      literal = Number((literal * 100).toFixed(6));
+    }
+  }
   return { kind: 'literal', value: literal };
 }
 
@@ -228,21 +240,91 @@ export function desiredVariableSignature(definition) {
 }
 
 export function desiredStyleSignature(definition) {
-  // Figma style APIs expose different bound-value shapes by style type. For
-  // stable identity we track the public style contract here and keep detailed
-  // content application in the plugin. This still detects rename/type drift.
-  return stableStringify({ name: definition.name, type: definition.type });
+  // Track the generated style contract rather than name/type alone so source
+  // typography changes (including unitless CSS line-height -> Figma percent)
+  // are applied even when the style keeps the same canonical id.
+  return stableStringify({
+    name: definition.name,
+    type: definition.type,
+    leadingTrim: definition.leadingTrim || null,
+    lineHeight: definition.lineHeight || null,
+    bindings: definition.bindings || null,
+    effects: definition.effects || null
+  });
+}
+
+function parseSignature(signature) {
+  if (!signature || typeof signature !== 'string') return null;
+  try {
+    const parsed = JSON.parse(signature);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function withoutKeys(value, keys) {
+  if (!value || typeof value !== 'object') return value;
+  const result = { ...value };
+  for (const key of keys) delete result[key];
+  return result;
+}
+
+function signatureChangedOnlyIn(signatureA, signatureB, keys) {
+  const a = parseSignature(signatureA);
+  const b = parseSignature(signatureB);
+  if (!a || !b) return false;
+  return stableStringify(withoutKeys(a, keys)) === stableStringify(withoutKeys(b, keys));
+}
+
+function reclassifyManagedMetadata(diff, keys) {
+  // Scopes/publishing are BufferCore-managed Figma exposure metadata. When a
+  // contract migration changes only those fields, it must not be mistaken for
+  // user-authored design drift. Genuine name/type/value/mode edits still remain
+  // drift/conflicts and keep the safety gate intact.
+  const update = [...(diff.update || [])];
+  const drift = [];
+  const conflict = [];
+
+  for (const item of diff.drift || []) {
+    const exposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedLiveSignature,
+      item.current?.liveSignature,
+      keys
+    );
+    if (exposureOnly) update.push(item);
+    else drift.push(item);
+  }
+
+  for (const item of diff.conflict || []) {
+    const sourceExposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedSignature,
+      item.desiredSignature,
+      keys
+    );
+    const figmaExposureOnly = signatureChangedOnlyIn(
+      item.current?.appliedLiveSignature,
+      item.current?.liveSignature,
+      keys
+    );
+    if (sourceExposureOnly && figmaExposureOnly) update.push(item);
+    else conflict.push(item);
+  }
+
+  return { ...diff, update, drift, conflict };
 }
 
 export function buildDiffSummary(desired, snapshot) {
-  const collectionDiff = diffByCanonicalId(desired.collections, snapshot.collections, desiredCollectionSignature, (a, b) => {
+  const rawCollectionDiff = diffByCanonicalId(desired.collections, snapshot.collections, desiredCollectionSignature, (a, b) => {
     return (a.figmaName || a.name) === b.name && a.publish === b.publish && stableStringify(a.modes.map((m) => m.name)) === stableStringify(b.modeNames || []);
   });
+  const collectionDiff = reclassifyManagedMetadata(rawCollectionDiff, ['publish']);
 
   const desiredVariables = desired.collections.flatMap((collection) => collection.variables.map((variable) => ({ ...variable, collectionId: collection.id })));
-  const variableDiff = diffByCanonicalId(desiredVariables, snapshot.variables, desiredVariableSignature, (a, b) => {
+  const rawVariableDiff = diffByCanonicalId(desiredVariables, snapshot.variables, desiredVariableSignature, (a, b) => {
     return (a.figmaName || a.name) === b.name && a.collectionId === b.collectionCanonicalId && a.type === b.type && stableStringify(a.scopes || []) === stableStringify(b.scopes || []);
   });
+  const variableDiff = reclassifyManagedMetadata(rawVariableDiff, ['scopes', 'publish']);
   const styleDiff = diffByCanonicalId(desired.styles, snapshot.styles, desiredStyleSignature, (a, b) => a.name === b.name && a.type === b.type);
 
   const groups = [collectionDiff, variableDiff, styleDiff];
@@ -288,4 +370,93 @@ export function summariseDiffByKind(diff) {
       collections: (diff?.collections?.update || []).filter((item) => item?.desired?.kind !== 'divider').length
     }
   };
+}
+
+
+
+
+export function contextCssSemanticTraits(cssVariable) {
+  const source = String(cssVariable || '').toLowerCase();
+  const has = (token) => new RegExp(`(?:^|-)${token}(?:-|$)`).test(source);
+  return {
+    inverse: has('inverse'),
+    strong: has('strong'),
+    muted: has('muted'),
+    subtle: has('subtle'),
+    soft: has('soft'),
+    bold: has('bold')
+  };
+}
+
+export function resolveContextMappingAmbiguity(domainId, sourceCss, destinations) {
+  const candidates = [...new Set((destinations || []).filter(Boolean))];
+  if (candidates.length <= 1) return candidates[0] || null;
+
+  // Colour Text has a deliberately smaller Neutral family than the chromatic
+  // roles. That means one canonical text token can legitimately occupy more
+  // than one Context slot. Resolve those collisions by preserving the semantic
+  // traits carried by the actual bound token (especially inverse text), instead
+  // of dropping the binding as ambiguous. Other Context domains keep the strict
+  // ambiguity behaviour.
+  if (domainId !== 'colour' || !String(sourceCss || '').includes('-color-text')) return null;
+
+  const weights = { inverse: 100, strong: 20, muted: 10, subtle: 10, soft: 10, bold: 10 };
+  const sourceTraits = contextCssSemanticTraits(sourceCss);
+  const ranked = candidates.map((destination) => {
+    const destinationTraits = contextCssSemanticTraits(destination);
+    let score = 0;
+    for (const [trait, weight] of Object.entries(weights)) {
+      score += sourceTraits[trait] === destinationTraits[trait] ? weight : -weight;
+    }
+    return { destination, score };
+  }).sort((a, b) => b.score - a.score || a.destination.localeCompare(b.destination));
+
+  if (!ranked.length || (ranked[1] && ranked[0].score === ranked[1].score)) return null;
+  return ranked[0].destination;
+}
+
+export function variantNameParts(name) {
+  const source = String(name ?? '').trim();
+  if (!source || !source.includes('=')) return null;
+
+  // Figma normally separates variant properties with commas, while some
+  // BufferCore-authored sets use slash-separated property names. Preserve the
+  // authored convention rather than converting the whole component name.
+  const delimiterMatch = source.match(/\s*,\s*|\s+\/\s+/);
+  const delimiter = delimiterMatch?.[0] || null;
+  const rawParts = delimiter ? source.split(delimiterMatch[0]) : [source];
+  const parts = rawParts.map((part) => {
+    const match = String(part).trim().match(/^([^=]+?)\s*=\s*(.*)$/);
+    if (!match) return null;
+    return { property: match[1].trim(), value: match[2].trim() };
+  });
+
+  if (parts.some((part) => !part)) return null;
+  return { source, delimiter, parts };
+}
+
+export function upsertVariantNameProperty(name, propertyNames, value, preferredPropertyName = null) {
+  const parsed = variantNameParts(name);
+  if (!parsed) return null;
+
+  const candidates = [...new Set((propertyNames || [])
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean))];
+  if (!candidates.length) return parsed.source;
+
+  const nextParts = parsed.parts.map((part) => ({ ...part }));
+  const index = nextParts.findIndex((part) => candidates.includes(part.property.toLowerCase()));
+  const nextValue = String(value ?? '').trim();
+
+  if (index >= 0) {
+    nextParts[index].value = nextValue;
+  } else {
+    nextParts.push({
+      property: String(preferredPropertyName || propertyNames?.[0] || 'Variant').trim(),
+      value: nextValue
+    });
+  }
+
+  const delimiter = parsed.delimiter || ', ';
+  return nextParts.map((part) => `${part.property}=${part.value}`).join(delimiter);
 }
